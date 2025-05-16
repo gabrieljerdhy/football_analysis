@@ -1,2 +1,79 @@
-*__pycahce__*
-*.pyc
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.ENV/
+
+# VSCode and other IDE config files
+.vscode/
+.idea/
+
+# PyCharm
+*.iml
+
+# Test and coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.cache
+.pytest_cache/
+
+# MacOS system files
+.DS_Store
+
+# Image and video outputs (optional: keep if needed)
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.mp4
+*.avi
+*.mov
+
+# Model files (optional: only ignore if they're too big or not needed in repo)
+*.h5
+*.pth
+*.tflite
+*.onnx
+*.pb
+
+# Logs
+*.log
+
+# Environment files
+*.env
+.env.*
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Data files (optional: ignore if large raw data shouldn't be tracked)
+data/
+datasets/
+output/
+results/
+
+# TensorBoard logs
+runs/
+logs/
+
+# Colab and IPython-specific
+*.ipynb_checkpoints/

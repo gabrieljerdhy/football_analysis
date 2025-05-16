@@ -52,6 +52,7 @@ coverage.xml
 *.tflite
 *.onnx
 *.pb
+computer_vision/models/*.pt
 
 # Logs
 *.log

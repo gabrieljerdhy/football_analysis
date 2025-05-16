@@ -54,6 +54,7 @@ coverage.xml
 *.pb
 computer_vision/models/*.pt
 *.pt
+*models/*.pt
 
 # Logs
 *.log

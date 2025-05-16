@@ -53,6 +53,7 @@ coverage.xml
 *.onnx
 *.pb
 computer_vision/models/*.pt
+*.pt
 
 # Logs
 *.log

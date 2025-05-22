@@ -14,65 +14,19 @@ from utils import read_video, save_video
 from view_transformer import ViewTransformer
 
 
-def process_football_video(
+def process_video(
     input_path,
-    output_path="output_videos/output_video.avi",
-    model_path="models/best.pt",
+    output_path,
+    model_path,
+    use_stubs=True,
     confidence=0.1,
-    resize_factor=0.5,
-    max_frames=None,
-    use_stubs=False,
-    show_ui=True,
-    force_reprocess=False,
+    resize_factor=1.0,
 ):
-    """
-    Process a football video to track players, ball, and count passes.
-
-    Args:
-        input_path (str): Path to the input video
-        output_path (str): Path to save the output video
-        model_path (str): Path to the YOLO model
-        confidence (float): Detection confidence threshold
-        resize_factor (float): Resize factor for input frames
-        max_frames (int): Maximum number of frames to process
-        use_stubs (bool): Whether to use stub files for faster processing
-        show_ui (bool): Whether to show UI elements like pass counts and ball possession
-        force_reprocess (bool): Whether to force reprocessing even if output video exists
-    """
     print(f"Processing video: {input_path}")
-
-    # Check if output video already exists
-    if os.path.exists(output_path) and not force_reprocess:
-        print(f"Output video already exists at {output_path}")
-        print("Use --force flag to reprocess the video")
-        return
+    print(f"Using model: {model_path}")
 
     # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-    # Create stubs directory if it doesn't exist
-    os.makedirs("stubs", exist_ok=True)
-
-    # Generate stub paths based on input filename
-    base_name = os.path.splitext(os.path.basename(input_path))[0]
-    track_stub_path = f"stubs/track_stubs_{base_name}.pkl"
-    camera_stub_path = f"stubs/camera_movement_stub_{base_name}.pkl"
-
-    # Check if stub files exist
-    track_stub_exists = os.path.exists(track_stub_path)
-    camera_stub_exists = os.path.exists(camera_stub_path)
-
-    if use_stubs and track_stub_exists and camera_stub_exists:
-        print(f"Found existing stub files for {base_name}")
-        print(f"Track stub: {track_stub_path}")
-        print(f"Camera stub: {camera_stub_path}")
-    else:
-        if use_stubs:
-            if not track_stub_exists:
-                print(f"Track stub file not found: {track_stub_path}")
-            if not camera_stub_exists:
-                print(f"Camera stub file not found: {camera_stub_path}")
-            print("Will generate new stub files")
 
     # Read Video
     video_frames = read_video(input_path)
@@ -85,11 +39,6 @@ def process_football_video(
     # Get original frame dimensions
     original_height, original_width = video_frames[0].shape[:2]
     print(f"Original frame dimensions: {original_width}x{original_height}")
-
-    # Limit the number of frames if specified
-    if max_frames is not None and max_frames > 0 and max_frames < len(video_frames):
-        print(f"Limiting to {max_frames} frames")
-        video_frames = video_frames[:max_frames]
 
     # Resize frames if needed to save memory
     if resize_factor != 1.0:
@@ -107,6 +56,14 @@ def process_football_video(
     tracker = Tracker(model_path, confidence=confidence)
     print("Initialized tracker")
 
+    # Create stubs directory if it doesn't exist
+    os.makedirs("stubs", exist_ok=True)
+
+    # Generate stub paths based on input filename
+    base_name = os.path.splitext(os.path.basename(input_path))[0]
+    track_stub_path = f"stubs/track_stubs_{base_name}.pkl"
+    camera_stub_path = f"stubs/camera_movement_stub_{base_name}.pkl"
+
     # Get object tracks
     print("Getting object tracks...")
     tracks = tracker.get_object_tracks(
@@ -114,7 +71,7 @@ def process_football_video(
     )
 
     # Check if we have any player tracks
-    if not tracks.get("players") or len(tracks["players"]) == 0:
+    if len(tracks["players"]) == 0:
         print("ERROR: No players detected in the video!")
         return
 
@@ -153,12 +110,10 @@ def process_football_video(
 
     # Interpolate Ball Positions
     print("Interpolating ball positions...")
-    if "ball" in tracks and len(tracks["ball"]) > 0:
+    if len(tracks["ball"]) > 0:
         tracks["ball"] = tracker.interpolate_ball_positions(tracks["ball"])
     else:
         print("WARNING: No ball detected in the video!")
-        # Create empty ball tracks
-        tracks["ball"] = [{} for _ in range(len(tracks["players"]))]
 
     # Speed and distance estimator
     print("Estimating speed and distance...")
@@ -196,7 +151,6 @@ def process_football_video(
         if (
             "ball" not in tracks
             or frame_num >= len(tracks["ball"])
-            or not tracks["ball"][frame_num]
             or 1 not in tracks["ball"][frame_num]
         ):
             # No ball data for this frame, just continue
@@ -234,25 +188,20 @@ def process_football_video(
     print("Drawing annotations...")
     ## Draw object Tracks
     output_video_frames = tracker.draw_annotations(
-        video_frames[:max_frames], tracks, team_ball_control, show_ui=show_ui
+        video_frames[:max_frames], tracks, team_ball_control
     )
 
     ## Draw Camera movement
-    if show_ui:
-        output_video_frames = camera_movement_estimator.draw_camera_movement(
-            output_video_frames, camera_movement_per_frame[: len(output_video_frames)]
-        )
+    output_video_frames = camera_movement_estimator.draw_camera_movement(
+        output_video_frames, camera_movement_per_frame[: len(output_video_frames)]
+    )
 
     ## Draw Speed and Distance
-    if show_ui:
-        speed_and_distance_estimator.draw_speed_and_distance(
-            output_video_frames, tracks
-        )
+    speed_and_distance_estimator.draw_speed_and_distance(output_video_frames, tracks)
 
     ## Draw Pass Counts - this will now show incremental progress
     if (
-        show_ui
-        and hasattr(pass_counter, "pass_counts_per_frame")
+        hasattr(pass_counter, "pass_counts_per_frame")
         and len(pass_counter.pass_counts_per_frame) > 0
     ):
         output_video_frames = pass_counter.draw_pass_counts(output_video_frames)
@@ -268,11 +217,16 @@ def process_football_video(
     print("Processing complete!")
 
 
-def main():
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Process football video with AI analysis"
     )
-    parser.add_argument("--input", type=str, required=True, help="Input video path")
+    parser.add_argument(
+        "--input",
+        type=str,
+        default="input_videos/demo_vid_2.mp4",
+        help="Input video path",
+    )
     parser.add_argument(
         "--output",
         type=str,
@@ -283,6 +237,9 @@ def main():
         "--model", type=str, default="models/best.pt", help="YOLO model path"
     )
     parser.add_argument(
+        "--no-stubs", action="store_true", help="Do not use or create stub files"
+    )
+    parser.add_argument(
         "--confidence", type=float, default=0.1, help="Detection confidence threshold"
     )
     parser.add_argument(
@@ -291,107 +248,14 @@ def main():
         default=0.5,
         help="Resize factor for input frames (0.5 = half size)",
     )
-    parser.add_argument(
-        "--max-frames",
-        type=int,
-        default=None,
-        help="Maximum number of frames to process",
-    )
-    parser.add_argument(
-        "--use-stubs", action="store_true", help="Use stub files for faster processing"
-    )
-    parser.add_argument(
-        "--no-ui",
-        action="store_true",
-        help="Disable UI elements like pass counts and ball possession",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force reprocessing even if output video exists",
-    )
-    parser.add_argument(
-        "--check-stubs",
-        action="store_true",
-        help="Check if stub files exist for this video",
-    )
 
     args = parser.parse_args()
 
-    # If check-stubs flag is set, just check if stub files exist and exit
-    if args.check_stubs:
-        base_name = os.path.splitext(os.path.basename(args.input))[0]
-        track_stub_path = f"stubs/track_stubs_{base_name}.pkl"
-        camera_stub_path = f"stubs/camera_movement_stub_{base_name}.pkl"
-
-        track_stub_exists = os.path.exists(track_stub_path)
-        camera_stub_exists = os.path.exists(camera_stub_path)
-
-        print(f"Checking stub files for {args.input}:")
-        print(
-            f"Track stub ({track_stub_path}): {'EXISTS' if track_stub_exists else 'NOT FOUND'}"
-        )
-        print(
-            f"Camera stub ({camera_stub_path}): {'EXISTS' if camera_stub_exists else 'NOT FOUND'}"
-        )
-
-        if track_stub_exists and camera_stub_exists:
-            print("All stub files exist. Use --use-stubs flag for faster processing.")
-        else:
-            print("Some stub files are missing. Processing will take longer.")
-
-        return
-
-    process_football_video(
-        input_path=args.input,
-        output_path=args.output,
-        model_path=args.model,
+    process_video(
+        args.input,
+        args.output,
+        args.model,
+        use_stubs=not args.no_stubs,
         confidence=args.confidence,
         resize_factor=args.resize,
-        max_frames=args.max_frames,
-        use_stubs=args.use_stubs,
-        show_ui=not args.no_ui,
-        force_reprocess=args.force,
     )
-
-
-def list_available_stubs():
-    """List all available stub files in the stubs directory"""
-    if not os.path.exists("stubs"):
-        print("No stubs directory found.")
-        return
-
-    track_stubs = [f for f in os.listdir("stubs") if f.startswith("track_stubs_")]
-    camera_stubs = [
-        f for f in os.listdir("stubs") if f.startswith("camera_movement_stub_")
-    ]
-
-    print("Available track stubs:")
-    for stub in track_stubs:
-        video_name = stub.replace("track_stubs_", "").replace(".pkl", "")
-        print(f"  - {video_name}")
-
-    print("\nAvailable camera movement stubs:")
-    for stub in camera_stubs:
-        video_name = stub.replace("camera_movement_stub_", "").replace(".pkl", "")
-        print(f"  - {video_name}")
-
-    # Find videos with complete stubs
-    track_video_names = set(
-        [s.replace("track_stubs_", "").replace(".pkl", "") for s in track_stubs]
-    )
-    camera_video_names = set(
-        [
-            s.replace("camera_movement_stub_", "").replace(".pkl", "")
-            for s in camera_stubs
-        ]
-    )
-    complete_stubs = track_video_names.intersection(camera_video_names)
-
-    print("\nVideos with complete stubs (both track and camera):")
-    for video_name in complete_stubs:
-        print(f"  - {video_name}")
-
-
-if __name__ == "__main__":
-    main()

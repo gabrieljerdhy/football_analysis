@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from camera_movement_estimator import CameraMovementEstimator
+from goal_detection import FieldKeypointsDetector, GoalDetector
 from pass_counter.pass_counter import PassCounter
 from pass_counter.tackle_counter import TackleCounter
 from player_ball_assigner import PlayerBallAssigner
@@ -15,6 +16,7 @@ from speed_and_distance_estimator import SpeedAndDistance_Estimator
 from team_assigner import TeamAssigner
 from trackers import Tracker
 from utils import read_video, save_video
+from utils.goal_utils import calculate_final_goal_stats, load_manual_goals
 from view_transformer import ViewTransformer
 
 
@@ -60,6 +62,13 @@ def main(
 
     # Initialize Tracker
     tracker = Tracker("models/best.pt")
+
+    # Initialize Goal Detection System
+    field_keypoints_detector = FieldKeypointsDetector("models/best_fk.pt")
+    goal_detector = GoalDetector(field_keypoints_detector)
+
+    # Load manual goals if provided
+    manual_goals = load_manual_goals(goals_config)
 
     # Check if tracks stub exists and should be used
     read_tracks_from_stub = (
@@ -155,8 +164,17 @@ def main(
             # Count passes with improved accuracy, passing frame number
             pass_counter.count_passes(assigned_player, current_team, frame_num)
 
-            # Detect goals if we have ball position
+            # Enhanced goal detection using field keypoints
             if ball_position:
+                # Update field keypoints for current frame
+                goal_detector.update_keypoints(video_frames[frame_num])
+
+                # Detect goals using enhanced system
+                goal_event = goal_detector.detect_goal(
+                    ball_position, assigned_player, current_team, frame_num
+                )
+
+                # Also use the old system for comparison (optional)
                 pass_counter.detect_goal(
                     ball_position, assigned_player, current_team, frame_num
                 )
@@ -186,12 +204,156 @@ def main(
 
     # Export player statistics to CSV
     video_name = Path(input_video_path).stem
-    csv_output_path = f"output/{video_name}_player_stats.csv"
-    pass_counter.export_player_stats_to_csv(csv_output_path)
+    player_csv_output_path = f"output/{video_name}_player_stats.csv"
 
-    # Export tackle statistics to CSV
-    tackle_csv_output_path = f"output/{video_name}_tackle_stats.csv"
-    tackle_counter.export_tackle_stats_to_csv(tackle_csv_output_path)
+    # Get enhanced goal statistics first
+    enhanced_goal_stats = goal_detector.get_goal_statistics()
+
+    # Calculate final goal statistics using priority system
+    final_team_goals, final_player_goals = calculate_final_goal_stats(
+        pass_counter, enhanced_goal_stats, manual_goals
+    )
+
+    # Combine all player statistics (passes, goals, tackles, interceptions)
+    combined_player_stats = {}
+
+    # Add pass and goal data
+    for player_id in set(pass_counter.player_passes.keys()) | set(
+        pass_counter.player_goals.keys()
+    ):
+        team = pass_counter.player_passes.get(player_id, {}).get(
+            "team"
+        ) or pass_counter.player_goals.get(player_id, {}).get("team", "Unknown")
+        passes = pass_counter.player_passes.get(player_id, {}).get("passes", 0)
+        goals = pass_counter.player_goals.get(player_id, {}).get("goals", 0)
+        enhanced_goals = (
+            enhanced_goal_stats["player_goals"].get(player_id, {}).get("goals", 0)
+        )
+
+        combined_player_stats[player_id] = {
+            "team": team,
+            "passes": passes,
+            "goals": goals,
+            "enhanced_goals": enhanced_goals,
+            "tackles": 0,
+            "interceptions": 0,
+        }
+
+    # Add tackle and interception data
+    for player_id, data in tackle_counter.player_tackles.items():
+        if player_id not in combined_player_stats:
+            enhanced_goals = (
+                enhanced_goal_stats["player_goals"].get(player_id, {}).get("goals", 0)
+            )
+            combined_player_stats[player_id] = {
+                "team": data.get("team", "Unknown"),
+                "passes": 0,
+                "goals": 0,
+                "enhanced_goals": enhanced_goals,
+                "tackles": data.get("tackles", 0),
+                "interceptions": 0,
+            }
+        else:
+            combined_player_stats[player_id]["tackles"] = data.get("tackles", 0)
+
+    for player_id, data in tackle_counter.player_interceptions.items():
+        if player_id not in combined_player_stats:
+            enhanced_goals = (
+                enhanced_goal_stats["player_goals"].get(player_id, {}).get("goals", 0)
+            )
+            combined_player_stats[player_id] = {
+                "team": data.get("team", "Unknown"),
+                "passes": 0,
+                "goals": 0,
+                "enhanced_goals": enhanced_goals,
+                "tackles": 0,
+                "interceptions": data.get("interceptions", 0),
+            }
+        else:
+            combined_player_stats[player_id]["interceptions"] = data.get(
+                "interceptions", 0
+            )
+
+    # Convert final player goals to simple count dictionary
+    final_player_goal_counts = {
+        pid: data.get("goals", 0) for pid, data in final_player_goals.items()
+    }
+
+    # Write combined player stats to CSV
+    with open(player_csv_output_path, "w", newline="") as csvfile:
+        fieldnames = [
+            "player_id",
+            "jersey_number",
+            "team",
+            "passes",
+            "goals",
+            "enhanced_goals",
+            "final_goals",
+            "tackles",
+            "interceptions",
+        ]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        writer.writeheader()
+        for player_id, data in combined_player_stats.items():
+            writer.writerow(
+                {
+                    "player_id": player_id,
+                    "jersey_number": player_id,  # Using player_id as jersey number for now
+                    "team": data.get("team", "Unknown"),
+                    "passes": data.get("passes", 0),
+                    "goals": data.get("goals", 0),
+                    "enhanced_goals": data.get("enhanced_goals", 0),
+                    "final_goals": final_player_goal_counts.get(player_id, 0),
+                    "tackles": data.get("tackles", 0),
+                    "interceptions": data.get("interceptions", 0),
+                }
+            )
+
+    # Use the already calculated final team goals
+    final_team_goal_counts = final_team_goals
+
+    # Export team statistics to CSV
+    team_csv_output_path = f"output/{video_name}_team_stats.csv"
+    with open(team_csv_output_path, "w", newline="") as csvfile:
+        fieldnames = [
+            "team",
+            "passes",
+            "goals",
+            "enhanced_goals",
+            "final_goals",
+            "tackles",
+            "interceptions",
+        ]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        writer.writeheader()
+        for team_id in [1, 2]:
+            writer.writerow(
+                {
+                    "team": team_id,
+                    "passes": pass_counter.team_passes.get(team_id, 0),
+                    "goals": pass_counter.team_goals.get(team_id, 0),
+                    "enhanced_goals": enhanced_goal_stats["team_goals"].get(team_id, 0),
+                    "final_goals": final_team_goal_counts.get(team_id, 0),
+                    "tackles": tackle_counter.team_tackles.get(team_id, 0),
+                    "interceptions": tackle_counter.team_interceptions.get(team_id, 0),
+                }
+            )
+
+    print(f"Player statistics saved to: {player_csv_output_path}")
+    print(f"Team statistics saved to: {team_csv_output_path}")
+
+    # Apply manual goals if provided (for display purposes in video)
+    if manual_goals:
+        print(f"\n🎯 Applying {len(manual_goals)} manual goals for video display...")
+        # Apply manual goals to pass counter for display in video
+        for goal in manual_goals:
+            pass_counter.add_manual_goal(
+                team=goal["team"],
+                player_id=goal["player_id"],
+                frame_num=goal["frame_num"],
+            )
 
     # Draw output
     ## Draw object Tracks
@@ -213,6 +375,12 @@ def main(
     ## Draw Goal Counts
     output_video_frames = pass_counter.draw_goal_counts(output_video_frames)
 
+    ## Draw Enhanced Goal Detection Information
+    for frame_num in range(len(output_video_frames)):
+        output_video_frames[frame_num] = goal_detector.draw_goal_info(
+            output_video_frames[frame_num]
+        )
+
     # Print final statistics for debugging
     print(
         f"Final pass counts: Team 1: {pass_counter.team_passes.get(1, 0)}, Team 2: {pass_counter.team_passes.get(2, 0)}"
@@ -220,6 +388,24 @@ def main(
     print(
         f"Final goal counts: Team 1: {pass_counter.team_goals.get(1, 0)}, Team 2: {pass_counter.team_goals.get(2, 0)}"
     )
+
+    # Print enhanced goal detection statistics
+    print(
+        f"Enhanced goal counts: Team 1: {enhanced_goal_stats['team_goals'].get(1, 0)}, Team 2: {enhanced_goal_stats['team_goals'].get(2, 0)}"
+    )
+    print(
+        f"Total goals detected by enhanced system: {enhanced_goal_stats['total_goals']}"
+    )
+
+    if enhanced_goal_stats["goal_events"]:
+        print("Goal events detected:")
+        for i, event in enumerate(enhanced_goal_stats["goal_events"], 1):
+            print(
+                f"  Goal {i}: Team {event['team']} at frame {event['frame_num']} ({event['goal_side']} goal)"
+            )
+            if event["player_id"] != -1:
+                print(f"    Scored by Player {event['player_id']}")
+            print(f"    Ball position: {event['ball_position']}")
 
     # Print player statistics
     print("Player statistics:")
@@ -236,7 +422,7 @@ def main(
     # Save video
     save_video(output_video_frames, output_video_path)
     print(f"Output video saved to: {output_video_path}")
-    print(f"Player statistics saved to: {csv_output_path}")
+    print(f"Player statistics saved to: {player_csv_output_path}")
 
 
 if __name__ == "__main__":

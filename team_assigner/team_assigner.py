@@ -1,4 +1,6 @@
+import cv2
 import numpy as np
+import skimage.color
 from sklearn.cluster import KMeans
 
 
@@ -6,6 +8,7 @@ class TeamAssigner:
     def __init__(self):
         self.team_colors = {}
         self.player_team_dict = {}
+        self.color_list_lab = None  # For storing LAB color space values
 
     def get_clustering_model(self, image):
         # Reshape the image to 2D array
@@ -65,6 +68,12 @@ class TeamAssigner:
                 [[0, 0, 255], [255, 0, 0]]  # Red  # Blue
             )
             self.kmeans.labels_ = np.array([0, 1])
+
+            # Convert team colors to LAB color space
+            self.color_list_lab = [
+                skimage.color.rgb2lab([i / 255 for i in c])
+                for c in [self.team_colors[1], self.team_colors[2]]
+            ]
             return
 
         for _, player_detection in player_detections.items():
@@ -87,6 +96,12 @@ class TeamAssigner:
                 [[0, 0, 255], [255, 0, 0]]  # Red  # Blue
             )
             self.kmeans.labels_ = np.array([0, 1])
+
+            # Convert team colors to LAB color space
+            self.color_list_lab = [
+                skimage.color.rgb2lab([i / 255 for i in c])
+                for c in [self.team_colors[1], self.team_colors[2]]
+            ]
             return
 
         # Convert to numpy array
@@ -101,14 +116,30 @@ class TeamAssigner:
         self.team_colors[1] = kmeans.cluster_centers_[0]
         self.team_colors[2] = kmeans.cluster_centers_[1]
 
+        # Convert team colors to LAB color space for better color comparison
+        self.color_list_lab = [
+            skimage.color.rgb2lab([i / 255 for i in c])
+            for c in [self.team_colors[1], self.team_colors[2]]
+        ]
+
     def get_player_team(self, frame, player_bbox, player_id):
         if player_id in self.player_team_dict:
             return self.player_team_dict[player_id]
 
         try:
             player_color = self.get_player_color(frame, player_bbox)
-            team_id = self.kmeans.predict(player_color.reshape(1, -1))[0]
-            team_id += 1
+
+            # Convert player color to LAB color space
+            player_color_lab = skimage.color.rgb2lab([i / 255 for i in player_color])
+
+            # Calculate color distances in LAB space
+            distances = [
+                skimage.color.deltaE_cie76(player_color_lab, team_color_lab)
+                for team_color_lab in self.color_list_lab
+            ]
+
+            # Assign team based on minimum distance
+            team_id = np.argmin(distances) + 1
 
             if player_id == 91:
                 team_id = 1

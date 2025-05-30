@@ -3,11 +3,12 @@
 Simple debug script to check ball positions and goal detection.
 """
 
+import os
 import sys
 from pathlib import Path
 
-# Add current directory to path
-sys.path.append(".")
+# Add parent directory to path to access project modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from goal_detection import FieldKeypointsDetector, GoalDetector
 from trackers import Tracker
@@ -28,7 +29,7 @@ def simple_ball_debug(video_path, max_frames=50):
         print(f"Video dimensions: {width}x{height}")
 
     # Initialize tracker
-    tracker = Tracker("models/best.pt")
+    tracker = Tracker("../models/best.pt")
 
     # Get tracks for first few frames
     debug_frames = video_frames[: min(max_frames, len(video_frames))]
@@ -108,7 +109,7 @@ def test_goal_detection_with_manual_positions(video_path):
     video_frames = read_video(video_path)
 
     # Initialize goal detector
-    keypoints_detector = FieldKeypointsDetector("models/best_fk.pt")
+    keypoints_detector = FieldKeypointsDetector("../models/best_fk.pt")
     goal_detector = GoalDetector(keypoints_detector)
 
     # Update with first frame to set video dimensions
@@ -153,7 +154,7 @@ def test_goal_detection_with_manual_positions(video_path):
 
 def main():
     # Test with your video
-    video_path = "input_videos/08fd33_4.mp4"
+    video_path = "../input_videos/08fd33_4.mp4"
 
     print("🔍 Simple Goal Detection Debug")
     print("=" * 40)

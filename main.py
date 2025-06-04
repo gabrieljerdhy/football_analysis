@@ -16,7 +16,11 @@ from speed_and_distance_estimator import SpeedAndDistance_Estimator
 from team_assigner import TeamAssigner
 from trackers import Tracker
 from utils import read_video, save_video
-from utils.goal_utils import calculate_final_goal_stats, load_manual_goals
+from utils.goal_utils import (
+    calculate_final_goal_stats,
+    export_consolidated_goal_statistics,
+    load_manual_goals,
+)
 from view_transformer import ViewTransformer
 
 
@@ -26,6 +30,8 @@ def main(
     use_stubs=True,
     force_regenerate=False,
     goals_config=None,
+    enable_camera_movement=False,
+    enable_speed_distance=False,
 ):
     """
     Process a football video to track players, detect passes, and analyze the game.
@@ -37,6 +43,8 @@ def main(
         use_stubs (bool): Whether to use stub files for faster processing
         force_regenerate (bool): Whether to force regeneration of stub files even if they exist
         goals_config (str, optional): Path to a CSV file with manual goal information
+        enable_camera_movement (bool): Whether to enable camera movement estimation (disabled by default for memory optimization)
+        enable_speed_distance (bool): Whether to enable speed and distance estimation (disabled by default for memory optimization)
     """
     # Create output directories if they don't exist
     os.makedirs("output", exist_ok=True)
@@ -51,7 +59,10 @@ def main(
     # Generate stub paths based on input video name
     video_name = Path(input_video_path).stem
     tracks_stub_path = f"stubs/{video_name}_tracks.pkl"
-    camera_movement_stub_path = f"stubs/{video_name}_camera_movement.pkl"
+
+    # Only generate camera movement stub path if camera movement is enabled
+    if enable_camera_movement:
+        camera_movement_stub_path = f"stubs/{video_name}_camera_movement.pkl"
 
     print(f"Processing video: {input_video_path}")
     print(f"Output will be saved to: {output_video_path}")
@@ -60,8 +71,8 @@ def main(
     video_frames = read_video(input_video_path)
     print(f"Loaded {len(video_frames)} frames")
 
-    # Initialize Tracker
-    tracker = Tracker("models/best.pt")
+    # Initialize Tracker with jersey number detection
+    tracker = Tracker("models/best.pt", enable_jersey_detection=True)
 
     # Initialize Goal Detection System
     field_keypoints_detector = FieldKeypointsDetector("models/best_fk.pt")
@@ -82,23 +93,34 @@ def main(
     # Get object positions
     tracker.add_position_to_tracks(tracks)
 
-    # Camera movement estimator
-    camera_movement_estimator = CameraMovementEstimator(video_frames[0])
+    # Add jersey numbers to tracks using OCR
+    tracker.add_jersey_numbers_to_tracks(tracks, video_frames, frame_sampling=5)
 
-    # Check if camera movement stub exists and should be used
-    read_camera_from_stub = (
-        use_stubs and os.path.exists(camera_movement_stub_path) and not force_regenerate
-    )
+    # Camera movement estimator (optional - disabled by default for memory optimization)
+    if enable_camera_movement:
+        print("🎥 Camera movement estimation enabled")
+        camera_movement_estimator = CameraMovementEstimator(video_frames[0])
 
-    camera_movement_per_frame = camera_movement_estimator.get_camera_movement(
-        video_frames,
-        read_from_stub=read_camera_from_stub,
-        stub_path=camera_movement_stub_path,
-    )
+        # Check if camera movement stub exists and should be used
+        read_camera_from_stub = (
+            use_stubs
+            and os.path.exists(camera_movement_stub_path)
+            and not force_regenerate
+        )
 
-    camera_movement_estimator.add_adjust_positions_to_tracks(
-        tracks, camera_movement_per_frame
-    )
+        camera_movement_per_frame = camera_movement_estimator.get_camera_movement(
+            video_frames,
+            read_from_stub=read_camera_from_stub,
+            stub_path=camera_movement_stub_path,
+        )
+
+        camera_movement_estimator.add_adjust_positions_to_tracks(
+            tracks, camera_movement_per_frame
+        )
+    else:
+        print("🎥 Camera movement estimation disabled (memory optimization)")
+        camera_movement_estimator = None
+        camera_movement_per_frame = None
 
     # View Transformer
     view_transformer = ViewTransformer()
@@ -107,9 +129,14 @@ def main(
     # Interpolate Ball Positions
     tracks["ball"] = tracker.interpolate_ball_positions(tracks["ball"])
 
-    # Speed and distance estimator
-    speed_and_distance_estimator = SpeedAndDistance_Estimator()
-    speed_and_distance_estimator.add_speed_and_distance_to_tracks(tracks)
+    # Speed and distance estimator (optional - disabled by default for memory optimization)
+    if enable_speed_distance:
+        print("🏃 Speed and distance estimation enabled")
+        speed_and_distance_estimator = SpeedAndDistance_Estimator()
+        speed_and_distance_estimator.add_speed_and_distance_to_tracks(tracks)
+    else:
+        print("🏃 Speed and distance estimation disabled (memory optimization)")
+        speed_and_distance_estimator = None
 
     # Assign Player Teams
     team_assigner = TeamAssigner()
@@ -202,10 +229,6 @@ def main(
 
     team_ball_control = np.array(team_ball_control)
 
-    # Export player statistics to CSV
-    video_name = Path(input_video_path).stem
-    player_csv_output_path = f"output/{video_name}_player_stats.csv"
-
     # Get enhanced goal statistics first
     enhanced_goal_stats = goal_detector.get_goal_statistics()
 
@@ -214,135 +237,24 @@ def main(
         pass_counter, enhanced_goal_stats, manual_goals
     )
 
-    # Combine all player statistics (passes, goals, tackles, interceptions)
-    combined_player_stats = {}
+    # Update goal detector with final counts for consistency
+    goal_detector.set_final_goal_counts(final_team_goals, final_player_goals)
 
-    # Add pass and goal data
-    for player_id in set(pass_counter.player_passes.keys()) | set(
-        pass_counter.player_goals.keys()
-    ):
-        team = pass_counter.player_passes.get(player_id, {}).get(
-            "team"
-        ) or pass_counter.player_goals.get(player_id, {}).get("team", "Unknown")
-        passes = pass_counter.player_passes.get(player_id, {}).get("passes", 0)
-        goals = pass_counter.player_goals.get(player_id, {}).get("goals", 0)
-        enhanced_goals = (
-            enhanced_goal_stats["player_goals"].get(player_id, {}).get("goals", 0)
-        )
+    # Export consolidated statistics to exactly two CSV files
+    video_name = Path(input_video_path).stem
+    team_csv_path, player_csv_path = export_consolidated_goal_statistics(
+        video_name,
+        pass_counter,
+        enhanced_goal_stats,
+        final_team_goals,
+        final_player_goals,
+        tackle_counter,
+    )
 
-        combined_player_stats[player_id] = {
-            "team": team,
-            "passes": passes,
-            "goals": goals,
-            "enhanced_goals": enhanced_goals,
-            "tackles": 0,
-            "interceptions": 0,
-        }
-
-    # Add tackle and interception data
-    for player_id, data in tackle_counter.player_tackles.items():
-        if player_id not in combined_player_stats:
-            enhanced_goals = (
-                enhanced_goal_stats["player_goals"].get(player_id, {}).get("goals", 0)
-            )
-            combined_player_stats[player_id] = {
-                "team": data.get("team", "Unknown"),
-                "passes": 0,
-                "goals": 0,
-                "enhanced_goals": enhanced_goals,
-                "tackles": data.get("tackles", 0),
-                "interceptions": 0,
-            }
-        else:
-            combined_player_stats[player_id]["tackles"] = data.get("tackles", 0)
-
-    for player_id, data in tackle_counter.player_interceptions.items():
-        if player_id not in combined_player_stats:
-            enhanced_goals = (
-                enhanced_goal_stats["player_goals"].get(player_id, {}).get("goals", 0)
-            )
-            combined_player_stats[player_id] = {
-                "team": data.get("team", "Unknown"),
-                "passes": 0,
-                "goals": 0,
-                "enhanced_goals": enhanced_goals,
-                "tackles": 0,
-                "interceptions": data.get("interceptions", 0),
-            }
-        else:
-            combined_player_stats[player_id]["interceptions"] = data.get(
-                "interceptions", 0
-            )
-
-    # Convert final player goals to simple count dictionary
+    # Convert final player goals to simple count dictionary for compatibility
     final_player_goal_counts = {
         pid: data.get("goals", 0) for pid, data in final_player_goals.items()
     }
-
-    # Write combined player stats to CSV
-    with open(player_csv_output_path, "w", newline="") as csvfile:
-        fieldnames = [
-            "player_id",
-            "jersey_number",
-            "team",
-            "passes",
-            "goals",
-            "enhanced_goals",
-            "final_goals",
-            "tackles",
-            "interceptions",
-        ]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
-        writer.writeheader()
-        for player_id, data in combined_player_stats.items():
-            writer.writerow(
-                {
-                    "player_id": player_id,
-                    "jersey_number": player_id,  # Using player_id as jersey number for now
-                    "team": data.get("team", "Unknown"),
-                    "passes": data.get("passes", 0),
-                    "goals": data.get("goals", 0),
-                    "enhanced_goals": data.get("enhanced_goals", 0),
-                    "final_goals": final_player_goal_counts.get(player_id, 0),
-                    "tackles": data.get("tackles", 0),
-                    "interceptions": data.get("interceptions", 0),
-                }
-            )
-
-    # Use the already calculated final team goals
-    final_team_goal_counts = final_team_goals
-
-    # Export team statistics to CSV
-    team_csv_output_path = f"output/{video_name}_team_stats.csv"
-    with open(team_csv_output_path, "w", newline="") as csvfile:
-        fieldnames = [
-            "team",
-            "passes",
-            "goals",
-            "enhanced_goals",
-            "final_goals",
-            "tackles",
-            "interceptions",
-        ]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
-        writer.writeheader()
-        for team_id in [1, 2]:
-            writer.writerow(
-                {
-                    "team": team_id,
-                    "passes": pass_counter.team_passes.get(team_id, 0),
-                    "goals": pass_counter.team_goals.get(team_id, 0),
-                    "enhanced_goals": enhanced_goal_stats["team_goals"].get(team_id, 0),
-                    "final_goals": final_team_goal_counts.get(team_id, 0),
-                    "tackles": tackle_counter.team_tackles.get(team_id, 0),
-                    "interceptions": tackle_counter.team_interceptions.get(team_id, 0),
-                }
-            )
-
-    print(f"Player statistics saved to: {player_csv_output_path}")
-    print(f"Team statistics saved to: {team_csv_output_path}")
 
     # Apply manual goals if provided (for display purposes in video)
     if manual_goals:
@@ -361,13 +273,17 @@ def main(
         video_frames, tracks, team_ball_control
     )
 
-    ## Draw Camera movement
-    output_video_frames = camera_movement_estimator.draw_camera_movement(
-        output_video_frames, camera_movement_per_frame
-    )
+    ## Draw Camera movement (only if enabled)
+    if enable_camera_movement and camera_movement_estimator is not None:
+        output_video_frames = camera_movement_estimator.draw_camera_movement(
+            output_video_frames, camera_movement_per_frame
+        )
 
-    ## Draw Speed and Distance
-    speed_and_distance_estimator.draw_speed_and_distance(output_video_frames, tracks)
+    ## Draw Speed and Distance (only if enabled)
+    if enable_speed_distance and speed_and_distance_estimator is not None:
+        speed_and_distance_estimator.draw_speed_and_distance(
+            output_video_frames, tracks
+        )
 
     ## Draw Pass Counts
     output_video_frames = pass_counter.draw_pass_counts(output_video_frames)
@@ -421,8 +337,23 @@ def main(
 
     # Save video
     save_video(output_video_frames, output_video_path)
-    print(f"Output video saved to: {output_video_path}")
-    print(f"Player statistics saved to: {player_csv_output_path}")
+    print(f"\n🎬 Output video saved to: {output_video_path}")
+    print(f"📊 Team statistics saved to: {team_csv_path}")
+    print(f"📊 Player statistics saved to: {player_csv_path}")
+
+    # Print final summary
+    print(f"\n🏆 FINAL GOAL SUMMARY:")
+    print(f"   Team 1: {final_team_goals[1]} goals")
+    print(f"   Team 2: {final_team_goals[2]} goals")
+    print(f"   Total players who scored: {len(final_player_goals)}")
+
+    if enhanced_goal_stats.get("average_confidence", 0) > 0:
+        print(
+            f"   Average detection confidence: {enhanced_goal_stats['average_confidence']:.2f}"
+        )
+        print(f"   Detection accuracy: {enhanced_goal_stats['detection_accuracy']:.2f}")
+
+    print(f"\n📈 ANALYSIS COMPLETE - Check CSV files for detailed statistics")
 
 
 if __name__ == "__main__":
@@ -457,6 +388,16 @@ if __name__ == "__main__":
         default=None,
         help="Create a template goals configuration file at the specified path",
     )
+    parser.add_argument(
+        "--enable-camera-movement",
+        action="store_true",
+        help="Enable camera movement estimation (disabled by default for memory optimization)",
+    )
+    parser.add_argument(
+        "--enable-speed-distance",
+        action="store_true",
+        help="Enable speed and distance estimation (disabled by default for memory optimization)",
+    )
 
     args = parser.parse_args()
 
@@ -479,4 +420,6 @@ if __name__ == "__main__":
         use_stubs=not args.no_stubs,
         force_regenerate=args.force_regenerate,
         goals_config=args.goals_config,
+        enable_camera_movement=args.enable_camera_movement,
+        enable_speed_distance=args.enable_speed_distance,
     )

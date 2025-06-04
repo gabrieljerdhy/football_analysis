@@ -118,9 +118,16 @@ def calculate_final_goal_stats(pass_counter, enhanced_goal_stats, manual_goals):
     Returns:
         tuple: (final_team_goals, final_player_goals)
     """
-    # Calculate final goal counts
+    # Initialize final goal counts
     final_team_goals = {1: 0, 2: 0}
     final_player_goals = {}
+
+    print("📊 Calculating final goal statistics...")
+    print(f"   Manual goals provided: {len(manual_goals) if manual_goals else 0}")
+    print(
+        f"   Enhanced goals detected: {enhanced_goal_stats.get('final_total_goals', 0) if enhanced_goal_stats else 0}"
+    )
+    print(f"   Regular goals detected: {sum(pass_counter.team_goals.values())}")
 
     # If manual goals are provided, use them as the final count
     if manual_goals:
@@ -139,8 +146,14 @@ def calculate_final_goal_stats(pass_counter, enhanced_goal_stats, manual_goals):
                 final_player_goals[player_id]["goals"] += 1
     else:
         # Use enhanced goals if available, otherwise regular goals
-        if enhanced_goal_stats and enhanced_goal_stats.get("total_goals", 0) > 0:
-            print("📊 Using enhanced goal detection as final goal count")
+        if enhanced_goal_stats and enhanced_goal_stats.get("final_total_goals", 0) > 0:
+            print("📊 Using enhanced goal detection final counts as final goal count")
+            final_team_goals = enhanced_goal_stats["final_team_goals"].copy()
+            final_player_goals = enhanced_goal_stats["final_player_goals"].copy()
+        elif enhanced_goal_stats and enhanced_goal_stats.get("total_goals", 0) > 0:
+            print(
+                "📊 Using enhanced goal detection real-time counts as final goal count"
+            )
             final_team_goals = enhanced_goal_stats["team_goals"].copy()
             final_player_goals = enhanced_goal_stats["player_goals"].copy()
         else:
@@ -163,3 +176,162 @@ def calculate_final_goal_stats(pass_counter, enhanced_goal_stats, manual_goals):
             )
 
     return final_team_goals, final_player_goals
+
+
+def export_consolidated_goal_statistics(
+    video_name,
+    pass_counter,
+    enhanced_goal_stats,
+    final_team_goals,
+    final_player_goals,
+    tackle_counter,
+    output_dir="output",
+):
+    """
+    Export consolidated goal statistics to exactly two CSV files as requested.
+
+    Args:
+        video_name (str): Name of the video being processed
+        pass_counter: PassCounter instance
+        enhanced_goal_stats: Enhanced goal statistics from GoalDetector
+        final_team_goals (dict): Final team goal counts
+        final_player_goals (dict): Final player goal counts
+        tackle_counter: TackleCounter instance
+        output_dir (str): Output directory for CSV files
+
+    Returns:
+        tuple: (team_csv_path, player_csv_path)
+    """
+    import os
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Consolidated team statistics CSV
+    team_csv_path = os.path.join(output_dir, f"{video_name}_team_stats.csv")
+
+    with open(team_csv_path, "w", newline="") as csvfile:
+        fieldnames = [
+            "team",
+            "passes",
+            "goals_regular",
+            "goals_enhanced",
+            "goals_final",
+            "tackles",
+            "interceptions",
+            "goal_events_count",
+            "avg_goal_confidence",
+        ]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        writer.writeheader()
+        for team_id in [1, 2]:
+            # Calculate team-specific goal events and confidence
+            team_goal_events = [
+                event
+                for event in enhanced_goal_stats.get("goal_events", [])
+                if event.get("team") == team_id
+            ]
+            avg_confidence = sum(
+                event.get("confidence_score", 0) for event in team_goal_events
+            ) / max(1, len(team_goal_events))
+
+            writer.writerow(
+                {
+                    "team": team_id,
+                    "passes": pass_counter.team_passes.get(team_id, 0),
+                    "goals_regular": pass_counter.team_goals.get(team_id, 0),
+                    "goals_enhanced": enhanced_goal_stats.get("team_goals", {}).get(
+                        team_id, 0
+                    ),
+                    "goals_final": final_team_goals.get(team_id, 0),
+                    "tackles": tackle_counter.team_tackles.get(team_id, 0),
+                    "interceptions": tackle_counter.team_interceptions.get(team_id, 0),
+                    "goal_events_count": len(team_goal_events),
+                    "avg_goal_confidence": round(avg_confidence, 3),
+                }
+            )
+
+    # Consolidated player statistics CSV
+    player_csv_path = os.path.join(output_dir, f"{video_name}_player_stats.csv")
+
+    # Collect all player IDs from various sources
+    all_player_ids = set()
+    all_player_ids.update(pass_counter.player_passes.keys())
+    all_player_ids.update(pass_counter.player_goals.keys())
+    all_player_ids.update(enhanced_goal_stats.get("player_goals", {}).keys())
+    all_player_ids.update(final_player_goals.keys())
+    all_player_ids.update(tackle_counter.player_tackles.keys())
+    all_player_ids.update(tackle_counter.player_interceptions.keys())
+
+    with open(player_csv_path, "w", newline="") as csvfile:
+        fieldnames = [
+            "player_id",
+            "team",
+            "passes",
+            "goals_regular",
+            "goals_enhanced",
+            "goals_final",
+            "tackles",
+            "interceptions",
+            "goal_events_count",
+            "avg_goal_confidence",
+        ]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        writer.writeheader()
+        for player_id in sorted(all_player_ids):
+            # Determine player team
+            team = (
+                pass_counter.player_passes.get(player_id, {}).get("team")
+                or pass_counter.player_goals.get(player_id, {}).get("team")
+                or enhanced_goal_stats.get("player_goals", {})
+                .get(player_id, {})
+                .get("team")
+                or final_player_goals.get(player_id, {}).get("team")
+                or tackle_counter.player_tackles.get(player_id, {}).get("team")
+                or tackle_counter.player_interceptions.get(player_id, {}).get("team")
+                or "Unknown"
+            )
+
+            # Calculate player-specific goal events and confidence
+            player_goal_events = [
+                event
+                for event in enhanced_goal_stats.get("goal_events", [])
+                if event.get("player_id") == player_id
+            ]
+            avg_confidence = sum(
+                event.get("confidence_score", 0) for event in player_goal_events
+            ) / max(1, len(player_goal_events))
+
+            writer.writerow(
+                {
+                    "player_id": player_id,
+                    "team": team,
+                    "passes": pass_counter.player_passes.get(player_id, {}).get(
+                        "passes", 0
+                    ),
+                    "goals_regular": pass_counter.player_goals.get(player_id, {}).get(
+                        "goals", 0
+                    ),
+                    "goals_enhanced": enhanced_goal_stats.get("player_goals", {})
+                    .get(player_id, {})
+                    .get("goals", 0),
+                    "goals_final": final_player_goals.get(player_id, {}).get(
+                        "goals", 0
+                    ),
+                    "tackles": tackle_counter.player_tackles.get(player_id, {}).get(
+                        "tackles", 0
+                    ),
+                    "interceptions": tackle_counter.player_interceptions.get(
+                        player_id, {}
+                    ).get("interceptions", 0),
+                    "goal_events_count": len(player_goal_events),
+                    "avg_goal_confidence": round(avg_confidence, 3),
+                }
+            )
+
+    print(f"📊 Consolidated statistics exported:")
+    print(f"   Team stats: {team_csv_path}")
+    print(f"   Player stats: {player_csv_path}")
+
+    return team_csv_path, player_csv_path

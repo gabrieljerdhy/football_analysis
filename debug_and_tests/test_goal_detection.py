@@ -53,9 +53,8 @@ def test_goal_detector():
     print("\nTesting GoalDetector...")
 
     try:
-        # Initialize detector with keypoints detector
-        keypoints_detector = FieldKeypointsDetector("../models/best_fk.pt")
-        goal_detector = GoalDetector(keypoints_detector)
+        # Initialize detector
+        goal_detector = GoalDetector()
         print("✓ GoalDetector initialized successfully")
 
         # Test goal detection with various ball positions
@@ -149,4 +148,5 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
     main()

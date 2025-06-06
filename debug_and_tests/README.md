@@ -81,6 +81,66 @@ cd debug_and_tests
 python test_goal_detection.py
 ```
 
+### `test_enhanced_goal_detection.py`
+
+**Purpose**: Enhanced goal detection system tests
+
+- Tests advanced goal detection features
+- Validates enhanced detection algorithms
+- Comprehensive testing of goal detection pipeline
+
+**Usage**:
+
+```bash
+cd debug_and_tests
+python test_enhanced_goal_detection.py
+```
+
+### `test_jersey_detection.py`
+
+**Purpose**: Jersey number detection testing
+
+- Tests OCR-based jersey number recognition
+- Validates jersey number validation (1-99 range)
+- Tests preprocessing and confidence scoring
+
+**Usage**:
+
+```bash
+cd debug_and_tests
+python test_jersey_detection.py
+```
+
+### `test_memory_optimization.py`
+
+**Purpose**: Memory optimization testing
+
+- Tests memory optimization features
+- Validates performance improvements
+- Checks memory usage reduction
+
+**Usage**:
+
+```bash
+cd debug_and_tests
+python test_memory_optimization.py
+```
+
+### `test_memory_optimization_simple.py`
+
+**Purpose**: Simple memory optimization tests
+
+- Basic tests for memory optimization changes
+- Tests command line parameters
+- Verifies default values for optimization flags
+
+**Usage**:
+
+```bash
+cd debug_and_tests
+python test_memory_optimization_simple.py
+```
+
 ### `yolo_inference.py`
 
 **Purpose**: YOLO model inference testing
@@ -94,6 +154,23 @@ python test_goal_detection.py
 ```bash
 cd debug_and_tests
 python yolo_inference.py
+```
+
+## ⚙️ Setup Scripts
+
+### `setup_jersey_detection.py`
+
+**Purpose**: Setup script for jersey number detection
+
+- Installs required OCR libraries (EasyOCR, PaddleOCR, Tesseract)
+- Configures jersey detection dependencies
+- Validates installation and setup
+
+**Usage**:
+
+```bash
+cd debug_and_tests
+python setup_jersey_detection.py
 ```
 
 ## 📁 File Organization
@@ -160,21 +237,6 @@ Make sure the main project is properly set up before running these debug scripts
 ```bash
 cd debug_and_tests
 python demo_memory_optimization.py --help
-```
-
-### `test_memory_optimization_simple.py`
-
-**Purpose**: Unit tests for memory optimization changes
-
-- Tests that new command line parameters work correctly
-- Verifies default values for memory optimization flags
-- Validates that imports still work correctly
-
-**Usage**:
-
-```bash
-cd debug_and_tests
-python test_memory_optimization_simple.py
 ```
 
 ## 💾 Memory Optimization Features

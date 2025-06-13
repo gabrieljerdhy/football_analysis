@@ -11,6 +11,7 @@ __pycache__/
 
 # Virtual environments
 venv/
+stubs/
 env/
 ENV/
 .venv/
@@ -74,6 +75,8 @@ data/
 datasets/
 output/
 results/
+output_videos/
+input_videos/
 
 # TensorBoard logs
 runs/

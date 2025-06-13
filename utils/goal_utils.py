@@ -186,9 +186,13 @@ def export_consolidated_goal_statistics(
     final_player_goals,
     tackle_counter,
     output_dir="output",
+    uploader=None,
+    bucket_name=None,
+    upload_folder_prefix="football_analysis",
 ):
     """
     Export consolidated goal statistics to exactly two CSV files as requested.
+    Optionally upload to DigitalOcean Spaces.
 
     Args:
         video_name (str): Name of the video being processed
@@ -198,6 +202,9 @@ def export_consolidated_goal_statistics(
         final_player_goals (dict): Final player goal counts
         tackle_counter: TackleCounter instance
         output_dir (str): Output directory for CSV files
+        uploader: DigitalOceanSpacesUploader instance (optional)
+        bucket_name (str): Bucket name for upload (optional)
+        upload_folder_prefix (str): Folder prefix for uploads
 
     Returns:
         tuple: (team_csv_path, player_csv_path)
@@ -333,5 +340,26 @@ def export_consolidated_goal_statistics(
     print(f"📊 Consolidated statistics exported:")
     print(f"   Team stats: {team_csv_path}")
     print(f"   Player stats: {player_csv_path}")
+
+    # Upload to DigitalOcean Spaces if uploader is provided
+    if uploader is not None:
+        print(f"\n☁️  Uploading CSV files to DigitalOcean Spaces...")
+        upload_results = uploader.upload_csv_files(
+            team_csv_path=team_csv_path,
+            player_csv_path=player_csv_path,
+            video_name=video_name,
+            bucket_name=bucket_name,
+            folder_prefix=upload_folder_prefix,
+        )
+
+        if upload_results.get("team_csv", False):
+            print(f"✅ Team CSV uploaded successfully")
+        else:
+            print(f"❌ Failed to upload team CSV")
+
+        if upload_results.get("player_csv", False):
+            print(f"✅ Player CSV uploaded successfully")
+        else:
+            print(f"❌ Failed to upload player CSV")
 
     return team_csv_path, player_csv_path

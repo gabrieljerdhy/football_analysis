@@ -15,6 +15,7 @@ env/
 ENV/
 .venv/
 .ENV/
+other_projecT_for_basis/
 
 # VSCode and other IDE config files
 .vscode/

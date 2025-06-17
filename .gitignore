@@ -11,12 +11,10 @@ __pycache__/
 
 # Virtual environments
 venv/
-stubs/
 env/
 ENV/
 .venv/
 .ENV/
-other_projecT_for_basis/
 
 # VSCode and other IDE config files
 .vscode/
@@ -54,9 +52,8 @@ coverage.xml
 *.tflite
 *.onnx
 *.pb
-computer_vision/models/*.pt
 *.pt
-*models/*.pt
+data/models/*.pt
 
 # Logs
 *.log
@@ -71,12 +68,14 @@ dist/
 *.egg-info/
 
 # Data files (optional: ignore if large raw data shouldn't be tracked)
-data/
+# Note: Updated paths for new directory structure
+data/input_videos/
+data/output/
+data/output_videos/
+data/stubs/
+data/models/
 datasets/
-output/
 results/
-output_videos/
-input_videos/
 
 # TensorBoard logs
 runs/
@@ -84,3 +83,43 @@ logs/
 
 # Colab and IPython-specific
 *.ipynb_checkpoints/
+
+# Football Analysis Project Specific
+# Timing and benchmark results
+timing_results/
+benchmark_results_*.json
+timing_results_*.json
+job_timing_log.csv
+
+# Temporary files and outputs
+temp/
+tmp/
+*.tmp
+
+# OS specific
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE specific
+*.sublime-project
+*.sublime-workspace
+
+# Python specific additions
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing
+.coverage
+.pytest_cache/
+.tox/
+htmlcov/
+
+# Documentation builds
+docs/_build/
+site/

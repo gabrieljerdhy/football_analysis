@@ -10,21 +10,21 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from camera_movement_estimator import CameraMovementEstimator
-from goal_detection import FieldKeypointsDetector, GoalDetector
-from pass_counter.pass_counter import PassCounter
-from pass_counter.tackle_counter import TackleCounter
-from player_ball_assigner import PlayerBallAssigner
-from speed_and_distance_estimator import SpeedAndDistance_Estimator
-from team_assigner import TeamAssigner
-from trackers import Tracker
-from utils import read_video, save_video
-from utils.goal_utils import (
+from src.camera_movement_estimator import CameraMovementEstimator
+from src.goal_detection import FieldKeypointsDetector, GoalDetector
+from src.pass_counter.pass_counter import PassCounter
+from src.pass_counter.tackle_counter import TackleCounter
+from src.player_ball_assigner import PlayerBallAssigner
+from src.speed_and_distance_estimator import SpeedAndDistance_Estimator
+from src.team_assigner import TeamAssigner
+from src.trackers import Tracker
+from src.utils import read_video, save_video
+from src.utils.goal_utils import (
     calculate_final_goal_stats,
     export_consolidated_goal_statistics,
     load_manual_goals,
 )
-from view_transformer import ViewTransformer
+from src.view_transformer import ViewTransformer
 
 # Global flag for graceful shutdown
 shutdown_requested = False
@@ -77,22 +77,22 @@ def main(
         enable_speed_distance (bool): Whether to enable speed and distance estimation (disabled by default for memory optimization)
     """
     # Create output directories if they don't exist
-    os.makedirs("output", exist_ok=True)
-    os.makedirs("output_videos", exist_ok=True)
-    os.makedirs("stubs", exist_ok=True)
+    os.makedirs("data/output", exist_ok=True)
+    os.makedirs("data/output_videos", exist_ok=True)
+    os.makedirs("data/stubs", exist_ok=True)
 
     # Generate default output path if not provided
     if output_video_path is None:
         video_name = Path(input_video_path).stem
-        output_video_path = f"output_videos/{video_name}_output.avi"
+        output_video_path = f"data/output_videos/{video_name}_output.avi"
 
     # Generate stub paths based on input video name
     video_name = Path(input_video_path).stem
-    tracks_stub_path = f"stubs/{video_name}_tracks.pkl"
+    tracks_stub_path = f"data/stubs/{video_name}_tracks.pkl"
 
     # Only generate camera movement stub path if camera movement is enabled
     if enable_camera_movement:
-        camera_movement_stub_path = f"stubs/{video_name}_camera_movement.pkl"
+        camera_movement_stub_path = f"data/stubs/{video_name}_camera_movement.pkl"
 
     print(f"Processing video: {input_video_path}")
     print(f"Output will be saved to: {output_video_path}")
@@ -102,7 +102,7 @@ def main(
         print("🚀 MEMORY-EFFICIENT FOOTBALL VIDEO ANALYSIS")
         print("=" * 60)
 
-        from utils import (
+        from src.utils import (
             VideoFrameIterator,
             cleanup_memory,
             get_video_info,
@@ -142,7 +142,7 @@ def main(
         # Initialize DigitalOcean Spaces uploader if requested (for memory-efficient mode)
         uploader = None
         if upload_to_spaces:
-            from utils.storage_utils import (
+            from src.utils.storage_utils import (
                 create_uploader_from_args,
                 create_uploader_from_env,
             )
@@ -234,10 +234,10 @@ def main(
     print(f"Loaded {len(video_frames)} frames")
 
     # Initialize Tracker with jersey number detection
-    tracker = Tracker("models/best.pt", enable_jersey_detection=True)
+    tracker = Tracker("data/models/best.pt", enable_jersey_detection=True)
 
     # Initialize Goal Detection System
-    field_keypoints_detector = FieldKeypointsDetector("models/best_fk.pt")
+    field_keypoints_detector = FieldKeypointsDetector("data/models/best_fk.pt")
     goal_detector = GoalDetector(field_keypoints_detector)
 
     # Load manual goals if provided
@@ -405,7 +405,7 @@ def main(
     # Initialize DigitalOcean Spaces uploader if requested
     uploader = None
     if upload_to_spaces:
-        from utils.storage_utils import (
+        from src.utils.storage_utils import (
             create_uploader_from_args,
             create_uploader_from_env,
         )
@@ -588,7 +588,7 @@ def process_video_memory_efficient(
     """
     Memory-efficient video processing that processes frames in batches.
     """
-    from utils import (
+    from src.utils import (
         VideoFrameIterator,
         cleanup_memory,
         monitor_memory_usage,
@@ -597,16 +597,16 @@ def process_video_memory_efficient(
 
     # Generate stub paths based on input video name
     video_name = Path(input_video_path).stem
-    tracks_stub_path = f"stubs/{video_name}_tracks.pkl"
-    camera_movement_stub_path = f"stubs/{video_name}_camera_movement.pkl"
+    tracks_stub_path = f"data/stubs/{video_name}_tracks.pkl"
+    camera_movement_stub_path = f"data/stubs/{video_name}_camera_movement.pkl"
 
     print("\n🔧 Initializing components...")
 
     # Initialize Tracker with jersey number detection
-    tracker = Tracker("models/best.pt", enable_jersey_detection=True)
+    tracker = Tracker("data/models/best.pt", enable_jersey_detection=True)
 
     # Initialize Goal Detection System
-    field_keypoints_detector = FieldKeypointsDetector("models/best_fk.pt")
+    field_keypoints_detector = FieldKeypointsDetector("data/models/best_fk.pt")
     goal_detector = GoalDetector(field_keypoints_detector)
 
     # Load manual goals if provided
@@ -694,7 +694,7 @@ def process_tracking_in_batches(
     input_video_path, tracker, batch_size, stub_path, video_info
 ):
     """Process object tracking in batches to avoid memory issues."""
-    from utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
+    from src.utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
 
     print(f"🔍 Processing tracking in batches of {batch_size} frames...")
 
@@ -738,7 +738,7 @@ def process_tracking_in_batches(
 
 def add_jersey_numbers_in_batches(input_video_path, tracker, tracks, batch_size):
     """Add jersey numbers to tracks in batches to save memory."""
-    from utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
+    from src.utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
 
     print(f"🔢 Adding jersey numbers in batches of {batch_size} frames...")
 
@@ -777,7 +777,7 @@ def process_camera_movement_in_batches(
     input_video_path, batch_size, stub_path, use_stubs, force_regenerate, video_info
 ):
     """Process camera movement estimation in batches."""
-    from utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
+    from src.utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
 
     read_camera_from_stub = (
         use_stubs and os.path.exists(stub_path) and not force_regenerate
@@ -847,7 +847,7 @@ def process_team_assignment_and_ball_tracking(
     spaces_folder_prefix="football_analysis",
 ):
     """Process team assignment and ball tracking in batches."""
-    from utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
+    from src.utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
 
     # Team assignment - need to get a frame for color analysis
     team_assigner = TeamAssigner()
@@ -1145,12 +1145,12 @@ def generate_output_video_memory_efficient(
     batch_size,
 ):
     """Generate output video with annotations in a memory-efficient way."""
-    from utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
+    from src.utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
 
     print(f"🎬 Generating output video in batches of {batch_size} frames...")
 
     # Initialize tracker for drawing
-    tracker = Tracker("models/best.pt", enable_jersey_detection=True)
+    tracker = Tracker("data/models/best.pt", enable_jersey_detection=True)
 
     # Initialize other components if needed
     camera_movement_estimator = None
@@ -1280,7 +1280,7 @@ def generate_output_video_memory_efficient(
                             speed = player.get("speed", 0)
                             distance = player.get("distance", 0)
                             if speed is not None and distance is not None:
-                                from utils.bbox_utils import get_foot_position
+                                from src.utils.bbox_utils import get_foot_position
 
                                 bbox = player["bbox"]
                                 position = get_foot_position(bbox)
@@ -1454,7 +1454,7 @@ if __name__ == "__main__":
 
     # Create goals template if requested
     if args.create_goals_template:
-        from utils.goal_utils import create_goals_template
+        from src.utils.goal_utils import create_goals_template
 
         create_goals_template(args.create_goals_template)
         exit(0)
@@ -1467,7 +1467,7 @@ if __name__ == "__main__":
 
     # Check video info only if requested
     if args.check_video_info:
-        from utils import get_video_info, monitor_memory_usage
+        from src.utils import get_video_info, monitor_memory_usage
 
         try:
             video_info = get_video_info(args.input)

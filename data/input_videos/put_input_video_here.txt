@@ -1,0 +1,6 @@
+# Input Videos Directory
+# Place your football video files here for analysis
+# Supported formats: .mp4, .avi, .mov, .mkv, .webm
+#
+# Usage:
+# python main.py --input data/input_videos/your_video.mp4

@@ -1,0 +1,10 @@
+# AI Models Directory
+# Place your trained YOLO models here
+#
+# Required models:
+# - best.pt (Main YOLO player detection model)
+# - best_fk.pt (Field keypoints detection model)
+# - best_player.pt (Player-specific model)
+#
+# Download links:
+# - Trained YOLO v5: https://drive.google.com/file/d/1DC2kCygbBWUKheQ_9cFziCsYVSRw6axK/view?usp=sharing

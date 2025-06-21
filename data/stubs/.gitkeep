@@ -1,0 +1,3 @@
+# This file ensures the data/stubs directory is tracked in git
+# Cached processing data will be stored here for faster re-runs
+# Files: {video_name}_tracks.pkl, {video_name}_camera_movement.pkl

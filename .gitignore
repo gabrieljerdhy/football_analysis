@@ -67,13 +67,34 @@ build/
 dist/
 *.egg-info/
 
-# Data files (optional: ignore if large raw data shouldn't be tracked)
+# Data files - Keep folder structure but ignore large files
 # Note: Updated paths for new directory structure
-data/input_videos/
-data/output/
-data/output_videos/
-data/stubs/
-data/models/
+
+# Input videos (keep folder, ignore video files)
+data/input_videos/*.mp4
+data/input_videos/*.avi
+data/input_videos/*.mov
+data/input_videos/*.mkv
+data/input_videos/*.webm
+
+# Output files (keep folder, ignore generated files)
+data/output/*.csv
+data/output_videos/*.avi
+data/output_videos/*.mp4
+data/output_videos/*.mov
+data/output_videos/*.jpg
+data/output_videos/*.png
+
+# Stubs (keep folder, ignore cache files)
+data/stubs/*.pkl
+
+# Models (keep folder, ignore large model files)
+data/models/*.pt
+data/models/*.h5
+data/models/*.onnx
+data/models/*.pth
+
+# Other data directories
 datasets/
 results/
 
@@ -89,7 +110,7 @@ logs/
 timing_results/
 benchmark_results_*.json
 timing_results_*.json
-job_timing_log.csv
+data/job_timing_log.csv
 
 # Temporary files and outputs
 temp/

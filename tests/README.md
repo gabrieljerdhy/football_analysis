@@ -83,16 +83,27 @@ python test_goal_detection.py
 
 ### `test_enhanced_goal_detection.py`
 
-**Purpose**: Enhanced goal detection system tests
+**Purpose**: Comprehensive enhanced goal detection system tests
 
-- Tests advanced goal detection features
-- Validates enhanced detection algorithms
-- Comprehensive testing of goal detection pipeline
+- Tests field keypoints detection with best_keypoint.pt model integration
+- Validates enhanced goal area calculation using penalty areas and goal lines
+- Tests advanced goal validation logic with field context
+- Validates performance optimization features (interval-based detection, caching)
+- Tests comprehensive goal event analysis with field geometry
+- Verifies integration with main pipeline
+- Includes performance benchmarking and optimization statistics
+
+**Features Tested**:
+- Field keypoints detection and area calculation
+- Enhanced goal validation with trajectory analysis
+- Optimization features and caching mechanisms
+- Goal event analysis with approach angles and field context
+- Integration compatibility with existing system
 
 **Usage**:
 
 ```bash
-cd debug_and_tests
+cd tests
 python test_enhanced_goal_detection.py
 ```
 

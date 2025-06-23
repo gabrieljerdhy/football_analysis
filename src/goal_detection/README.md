@@ -12,7 +12,7 @@ The enhanced goal detection system consists of two main components:
 ## Features
 
 ### FieldKeypointsDetector
-- Detects field keypoints using YOLO model (`best_fk.pt`)
+- Detects field keypoints using YOLO model (`best_keypoint.pt`)
 - Identifies goal posts, penalty areas, center circle, and other field markers
 - Dynamically calculates goal area boundaries based on detected keypoints
 - Provides fallback to hardcoded areas if keypoints are not detected
@@ -33,7 +33,7 @@ The enhanced goal detection system consists of two main components:
 from goal_detection import FieldKeypointsDetector, GoalDetector
 
 # Initialize components
-keypoints_detector = FieldKeypointsDetector("models/best_fk.pt")
+keypoints_detector = FieldKeypointsDetector("models/best_keypoint.pt")
 goal_detector = GoalDetector(keypoints_detector)
 
 # Process a frame
@@ -120,7 +120,7 @@ python test_goal_detection.py
 ## Model Requirements
 
 The system requires the field keypoints YOLO model:
-- `models/best_fk.pt`: Field keypoints detection model
+- `models/best_keypoint.pt`: Field keypoints detection model
 
 Make sure this model is available in your models directory.
 
@@ -138,8 +138,8 @@ The enhanced system provides several improvements over the original goal detecti
 
 ### Common Issues
 
-1. **No keypoints detected**: 
-   - Check if `best_fk.pt` model exists
+1. **No keypoints detected**:
+   - Check if `best_keypoint.pt` model exists
    - Verify model confidence threshold
    - System will fallback to hardcoded areas
 

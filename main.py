@@ -234,11 +234,16 @@ def main(
     print(f"Loaded {len(video_frames)} frames")
 
     # Initialize Tracker with jersey number detection
-    tracker = Tracker("data/models/best.pt", enable_jersey_detection=True)
+    tracker = Tracker("data/models/best_detect.pt", enable_jersey_detection=True)
 
-    # Initialize Goal Detection System
-    field_keypoints_detector = FieldKeypointsDetector("data/models/best_fk.pt")
+    # Initialize Enhanced Goal Detection System
+    field_keypoints_detector = FieldKeypointsDetector("data/models/best_keypoint.pt")
     goal_detector = GoalDetector(field_keypoints_detector)
+
+    # Configure optimization for better performance
+    goal_detector.set_keypoint_optimization(
+        detection_interval=5, stability_threshold=10
+    )
 
     # Load manual goals if provided
     manual_goals = load_manual_goals(goals_config)
@@ -603,11 +608,18 @@ def process_video_memory_efficient(
     print("\n🔧 Initializing components...")
 
     # Initialize Tracker with jersey number detection
-    tracker = Tracker("data/models/best.pt", enable_jersey_detection=True)
+    tracker = Tracker("data/models/best_detect.pt", enable_jersey_detection=True)
 
-    # Initialize Goal Detection System
-    field_keypoints_detector = FieldKeypointsDetector("data/models/best_fk.pt")
+    # Initialize Enhanced Goal Detection System
+    field_keypoints_detector = FieldKeypointsDetector("data/models/best_keypoint.pt")
     goal_detector = GoalDetector(field_keypoints_detector)
+
+    # Configure optimization for memory-efficient processing
+    # Use larger intervals for very large videos to reduce computational load
+    detection_interval = 10 if video_info.get("total_frames", 0) > 50000 else 5
+    goal_detector.set_keypoint_optimization(
+        detection_interval=detection_interval, stability_threshold=15
+    )
 
     # Load manual goals if provided
     manual_goals = load_manual_goals(goals_config)
@@ -1150,7 +1162,7 @@ def generate_output_video_memory_efficient(
     print(f"🎬 Generating output video in batches of {batch_size} frames...")
 
     # Initialize tracker for drawing
-    tracker = Tracker("data/models/best.pt", enable_jersey_detection=True)
+    tracker = Tracker("data/models/best_detect.pt", enable_jersey_detection=True)
 
     # Initialize other components if needed
     camera_movement_estimator = None

@@ -9,8 +9,8 @@ import supervision as sv
 from ultralytics import YOLO
 
 sys.path.append("../")
-from jersey_number_detector import JerseyNumberDetector
-from utils import get_bbox_width, get_center_of_bbox, get_foot_position
+from src.jersey_number_detector import JerseyNumberDetector
+from src.utils import get_bbox_width, get_center_of_bbox, get_foot_position
 
 
 class Tracker:

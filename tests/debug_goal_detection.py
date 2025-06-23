@@ -94,7 +94,7 @@ def debug_field_keypoints(video_frames, max_frames=10):
     print(f"\n🎯 Debugging field keypoints detection:")
 
     # Initialize detector
-    keypoints_detector = FieldKeypointsDetector("../models/best_fk.pt")
+    keypoints_detector = FieldKeypointsDetector("../models/best_keypoint.pt")
 
     total_keypoints = 0
     goal_keypoints_found = 0
@@ -204,7 +204,7 @@ def create_debug_video(video_path, output_path, max_frames=100):
     debug_frames = video_frames[: min(max_frames, len(video_frames))]
 
     # Get tracking data
-    tracker = Tracker("../models/best.pt")
+    tracker = Tracker("../models/best_detect.pt")
     tracks = tracker.get_object_tracks(
         debug_frames, read_from_stub=False, stub_path=None
     )
@@ -212,7 +212,7 @@ def create_debug_video(video_path, output_path, max_frames=100):
     tracks["ball"] = tracker.interpolate_ball_positions(tracks["ball"])
 
     # Initialize goal detection
-    keypoints_detector = FieldKeypointsDetector("../models/best_fk.pt")
+    keypoints_detector = FieldKeypointsDetector("../models/best_keypoint.pt")
     goal_detector = GoalDetector(keypoints_detector)
 
     output_frames = []

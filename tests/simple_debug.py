@@ -109,7 +109,7 @@ def test_goal_detection_with_manual_positions(video_path):
     video_frames = read_video(video_path)
 
     # Initialize goal detector
-    keypoints_detector = FieldKeypointsDetector("../models/best_fk.pt")
+    keypoints_detector = FieldKeypointsDetector("../models/best_keypoint.pt")
     goal_detector = GoalDetector(keypoints_detector)
 
     # Update with first frame to set video dimensions

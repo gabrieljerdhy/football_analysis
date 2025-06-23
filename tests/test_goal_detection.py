@@ -25,7 +25,7 @@ def test_field_keypoints_detector():
 
     try:
         # Initialize detector
-        detector = FieldKeypointsDetector("../models/best_fk.pt")
+        detector = FieldKeypointsDetector("../models/best_keypoint.pt")
         print("✓ FieldKeypointsDetector initialized successfully")
 
         # Test keypoint detection

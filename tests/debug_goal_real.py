@@ -46,7 +46,7 @@ def analyze_ball_positions_in_video(video_path, max_frames=200):
     tracks["ball"] = tracker.interpolate_ball_positions(tracks["ball"])
 
     # Initialize goal detector
-    keypoints_detector = FieldKeypointsDetector("../models/best_fk.pt")
+    keypoints_detector = FieldKeypointsDetector("../models/best_keypoint.pt")
     goal_detector = GoalDetector(keypoints_detector)
 
     # Update goal detector with first frame to set dimensions
@@ -171,7 +171,7 @@ def create_visual_debug_video(video_path, output_path, max_frames=100):
     tracks["ball"] = tracker.interpolate_ball_positions(tracks["ball"])
 
     # Initialize goal detection
-    keypoints_detector = FieldKeypointsDetector("../models/best_fk.pt")
+    keypoints_detector = FieldKeypointsDetector("../models/best_keypoint.pt")
     goal_detector = GoalDetector(keypoints_detector)
     goal_detector.update_keypoints(video_frames[0])
 

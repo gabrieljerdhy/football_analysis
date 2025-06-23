@@ -84,6 +84,7 @@ data/output_videos/*.mp4
 data/output_videos/*.mov
 data/output_videos/*.jpg
 data/output_videos/*.png
+notebooks/training/
 
 # Stubs (keep folder, ignore cache files)
 data/stubs/*.pkl
@@ -97,6 +98,7 @@ data/models/*.pth
 # Other data directories
 datasets/
 results/
+training/
 
 # TensorBoard logs
 runs/

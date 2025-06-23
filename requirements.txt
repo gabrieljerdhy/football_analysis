@@ -10,3 +10,7 @@ pillow
 psutil
 boto3
 python-dotenv
+SoccerNet
+pandas
+tqdm
+albumentations

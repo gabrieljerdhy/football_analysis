@@ -2,8 +2,8 @@
 # Place your trained YOLO models here
 #
 # Required models:
-# - best.pt (Main YOLO player detection model)
-# - best_fk.pt (Field keypoints detection model)
+# - best_detect.pt (Main YOLO player and ball detection model)
+# - best_keypoint.pt (Field keypoints detection model)
 # - best_player.pt (Player-specific model)
 #
 # Download links:

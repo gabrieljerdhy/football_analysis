@@ -165,7 +165,7 @@ def test_jersey_detection_with_video(video_path, max_frames=50):
         print(f"📹 Loaded {len(video_frames)} frames")
 
         # Initialize tracker with jersey detection
-        tracker = Tracker("../models/best.pt", enable_jersey_detection=True)
+        tracker = Tracker("../models/best_detect.pt", enable_jersey_detection=True)
 
         # Get tracks for first few frames
         debug_frames = video_frames[: min(max_frames, len(video_frames))]

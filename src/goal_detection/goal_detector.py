@@ -13,7 +13,9 @@ class GoalDetector:
     Enhanced goal detection using field keypoints and ball tracking.
     """
 
-    def __init__(self, keypoints_detector=None, goal_cooldown_frames=60):
+    def __init__(
+        self, keypoints_detector=None, goal_cooldown_frames=450
+    ):  # IMPROVED: Increased to 450 frames (15 seconds at 30fps) to prevent duplicate detections
         """
         Initialize the goal detector.
 
@@ -43,10 +45,16 @@ class GoalDetector:
         self.ball_trajectory = []  # Track ball movement for goal validation
         self.max_trajectory_length = 20  # Increased for better trajectory analysis
 
-        # Enhanced trajectory analysis parameters
-        self.min_trajectory_for_goal = 5  # Minimum trajectory points for validation
-        self.goal_direction_threshold = 0.6  # Minimum directional consistency
-        self.goal_speed_threshold = 10  # Minimum ball speed for goal validation
+        # IMPROVED: Stricter parameters to reduce false positives
+        self.min_trajectory_for_goal = (
+            12  # IMPROVED: Increased from 5 to 12 for more evidence
+        )
+        self.goal_direction_threshold = (
+            0.8  # IMPROVED: Increased from 0.6 to 0.8 for more decisive movement
+        )
+        self.goal_speed_threshold = (
+            15  # IMPROVED: Increased from 10 to 15 for more realistic goal speeds
+        )
 
         # Fallback goal areas (if keypoints not detected)
         # These will be updated based on actual video dimensions
@@ -97,9 +105,11 @@ class GoalDetector:
             width (int): Video width
             height (int): Video height
         """
-        # Calculate goal areas as percentage of video dimensions
-        goal_width_percent = 0.08  # 8% of video width
-        goal_height_percent = 0.45  # 45% of video height (centered)
+        # IMPROVED: Smaller goal areas to reduce false positives
+        goal_width_percent = 0.015  # IMPROVED: 1.5% of video width (was 4% - too large)
+        goal_height_percent = (
+            0.25  # IMPROVED: 25% of video height (was 35% - too large)
+        )
 
         goal_width = int(width * goal_width_percent)
         goal_height = int(height * goal_height_percent)
@@ -125,15 +135,25 @@ class GoalDetector:
         print(f"   Left goal: {self.fallback_goal_areas['left']}")
         print(f"   Right goal: {self.fallback_goal_areas['right']}")
 
-    def detect_goal(self, ball_position, player_id, team, frame_num):
+    def detect_goal(
+        self,
+        ball_position,
+        player_id,
+        team,
+        frame_num,
+        ball_confidence=None,
+        ball_source=None,
+    ):
         """
-        Detect if a goal has been scored using enhanced logic.
+        Detect if a goal has been scored using enhanced logic with ball detection confidence.
 
         Args:
             ball_position (tuple): (x, y) position of the ball
             player_id (int): ID of the player who last touched the ball
             team (int): Team of the player
             frame_num (int): Current frame number
+            ball_confidence (float): Confidence score of ball detection (optional)
+            ball_source (str): Source of ball detection (e.g., 'specialized', 'general', 'interpolated')
 
         Returns:
             dict or None: Goal event details if goal detected, None otherwise
@@ -146,18 +166,34 @@ class GoalDetector:
         if not ball_position:
             return None
 
-        # Add ball position to trajectory
-        self._update_ball_trajectory(ball_position)
+        # Enhanced ball position tracking with confidence information
+        ball_info = {
+            "position": ball_position,
+            "confidence": ball_confidence or 0.5,
+            "source": ball_source or "unknown",
+            "frame_num": frame_num,
+        }
+
+        # Add ball position to trajectory with enhanced information
+        self._update_ball_trajectory_enhanced(ball_info)
 
         # Check if ball is in goal area using keypoints
         goal_side = self._check_ball_in_goal(ball_position)
 
         if goal_side and not self.goal_detected:
-            # Validate goal using trajectory analysis
-            if self._validate_goal_trajectory(goal_side):
+            # Enhanced trajectory validation considering ball detection quality
+            if self._validate_goal_trajectory_enhanced(
+                goal_side, ball_confidence, ball_source
+            ):
                 goal_event = self._register_goal(
                     goal_side, player_id, team, frame_num, ball_position
                 )
+                # Add enhanced ball tracking information to goal event
+                goal_event["ball_detection_quality"] = {
+                    "confidence": ball_confidence,
+                    "source": ball_source,
+                    "trajectory_confidence": self._calculate_trajectory_confidence(),
+                }
                 return goal_event
 
         # Reset goal detection when ball is in middle of field
@@ -166,9 +202,22 @@ class GoalDetector:
 
         return None
 
+    def _update_ball_trajectory_enhanced(self, ball_info):
+        """
+        Update ball trajectory with enhanced information including confidence and source.
+
+        Args:
+            ball_info (dict): Dictionary containing position, confidence, source, and frame_num
+        """
+        self.ball_trajectory.append(ball_info)
+
+        # Keep trajectory length manageable
+        if len(self.ball_trajectory) > self.max_trajectory_length:
+            self.ball_trajectory = self.ball_trajectory[-self.max_trajectory_length :]
+
     def _update_ball_trajectory(self, ball_position):
         """
-        Update ball trajectory for goal validation.
+        Update ball trajectory for goal validation (backward compatibility).
 
         Args:
             ball_position (tuple): Current ball position
@@ -248,16 +297,17 @@ class GoalDetector:
             left_area["x_min"] <= x <= left_area["x_max"]
             and left_area["y_min"] <= y <= left_area["y_max"]
         ):
-            # Additional validation: check trajectory direction if available
-            if len(self.ball_trajectory) >= 2:
-                recent_movement_x = (
-                    self.ball_trajectory[-1][0] - self.ball_trajectory[-2][0]
-                )
-                # Ball should be moving towards the goal (leftward for left goal)
-                if recent_movement_x <= 0:  # Moving left or stationary
+            # IMPROVED: Require decisive movement toward goal
+            if len(self.ball_trajectory) >= 3:
+                # Check movement over last 3 frames for more reliable direction
+                # Extract x positions from ball_info dictionaries
+                current_x = self.ball_trajectory[-1]["position"][0]
+                previous_x = self.ball_trajectory[-3]["position"][0]
+                movement_x = current_x - previous_x
+                # Ball must be moving decisively toward the goal (not just stationary)
+                if movement_x < -5:  # Moving left with minimum speed
                     return "left"
-            else:
-                return "left"
+            # No longer return "left" by default - require evidence of movement
 
         # Check right goal with enhanced validation
         right_area = self.fallback_goal_areas["right"]
@@ -265,16 +315,17 @@ class GoalDetector:
             right_area["x_min"] <= x <= right_area["x_max"]
             and right_area["y_min"] <= y <= right_area["y_max"]
         ):
-            # Additional validation: check trajectory direction if available
-            if len(self.ball_trajectory) >= 2:
-                recent_movement_x = (
-                    self.ball_trajectory[-1][0] - self.ball_trajectory[-2][0]
-                )
-                # Ball should be moving towards the goal (rightward for right goal)
-                if recent_movement_x >= 0:  # Moving right or stationary
+            # IMPROVED: Require decisive movement toward goal
+            if len(self.ball_trajectory) >= 3:
+                # Check movement over last 3 frames for more reliable direction
+                # Extract x positions from ball_info dictionaries
+                current_x = self.ball_trajectory[-1]["position"][0]
+                previous_x = self.ball_trajectory[-3]["position"][0]
+                movement_x = current_x - previous_x
+                # Ball must be moving decisively toward the goal (not just stationary)
+                if movement_x > 5:  # Moving right with minimum speed
                     return "right"
-            else:
-                return "right"
+            # No longer return "right" by default - require evidence of movement
 
         return None
 
@@ -289,10 +340,11 @@ class GoalDetector:
             bool: True if trajectory indicates a valid goal
         """
         if len(self.ball_trajectory) < self.min_trajectory_for_goal:
-            return True  # Not enough data, assume valid
+            return False  # IMPROVED: Not enough data, require more evidence for goal
 
         # Get field context for enhanced validation
-        current_ball_position = self.ball_trajectory[-1]
+        current_ball_info = self.ball_trajectory[-1]
+        current_ball_position = current_ball_info["position"]  # Extract (x, y) tuple
         field_context = self.keypoints_detector.get_field_context(current_ball_position)
 
         # Calculate trajectory metrics with enhanced field-aware scoring
@@ -328,10 +380,16 @@ class GoalDetector:
         # Store confidence score for analysis
         self.goal_confidence_scores.append(confidence_score)
 
-        # Enhanced validation threshold based on field confidence
-        base_threshold = 0.5
-        field_confidence_bonus = field_context["field_confidence"] * 0.1
-        validation_threshold = max(0.4, base_threshold - field_confidence_bonus)
+        # IMPROVED: Higher validation threshold to reduce false positives
+        base_threshold = (
+            0.75  # IMPROVED: Increased from 0.5 to 0.75 for better accuracy
+        )
+        field_confidence_bonus = (
+            field_context["field_confidence"] * 0.05
+        )  # IMPROVED: Reduced bonus to prevent over-sensitivity
+        validation_threshold = max(
+            0.65, base_threshold - field_confidence_bonus
+        )  # IMPROVED: Minimum 0.65 (was 0.4) for stricter validation
 
         # Goal is valid if confidence score is above dynamic threshold
         is_valid = confidence_score >= validation_threshold
@@ -354,6 +412,109 @@ class GoalDetector:
         self.goal_validation_history.append(validation_record)
 
         return is_valid
+
+    def _validate_goal_trajectory_enhanced(
+        self, goal_side, ball_confidence=None, ball_source=None
+    ):
+        """
+        Enhanced goal validation that considers ball detection quality and confidence.
+
+        Args:
+            goal_side (str): Which goal side ("left" or "right")
+            ball_confidence (float): Confidence of ball detection
+            ball_source (str): Source of ball detection
+
+        Returns:
+            bool: True if trajectory indicates a valid goal
+        """
+        # Use standard validation as base
+        base_validation = self._validate_goal_trajectory(goal_side)
+
+        if not base_validation:
+            return False
+
+        # Enhanced validation considering ball detection quality
+        confidence_modifier = 1.0
+
+        # Adjust confidence based on ball detection source
+        if ball_source == "specialized":
+            confidence_modifier += 0.1  # Boost for specialized ball model
+        elif ball_source == "interpolated_high_conf":
+            confidence_modifier += 0.05  # Small boost for high-confidence interpolation
+        elif ball_source in ["interpolated_standard", "interpolated"]:
+            confidence_modifier -= 0.1  # Penalty for standard interpolation
+
+        # Adjust confidence based on ball detection confidence
+        if ball_confidence is not None:
+            if ball_confidence >= 0.8:
+                confidence_modifier += 0.1  # High confidence detection
+            elif ball_confidence >= 0.6:
+                confidence_modifier += 0.05  # Medium confidence detection
+            elif ball_confidence < 0.3:
+                confidence_modifier -= 0.15  # Low confidence detection
+
+        # Calculate enhanced trajectory confidence
+        trajectory_confidence = self._calculate_trajectory_confidence()
+
+        # Enhanced validation requires higher standards for interpolated data
+        if ball_source and "interpolated" in ball_source:
+            # Require higher trajectory confidence for interpolated data
+            enhanced_threshold = 0.8
+        else:
+            enhanced_threshold = 0.7
+
+        # Apply confidence modifier to trajectory confidence
+        final_confidence = trajectory_confidence * confidence_modifier
+
+        return final_confidence >= enhanced_threshold
+
+    def _calculate_trajectory_confidence(self):
+        """
+        Calculate overall confidence of the ball trajectory based on detection quality.
+
+        Returns:
+            float: Confidence score between 0.0 and 1.0
+        """
+        if not self.ball_trajectory:
+            return 0.0
+
+        # Analyze trajectory for enhanced ball tracking information
+        total_confidence = 0.0
+        specialized_count = 0
+        interpolated_count = 0
+
+        for ball_info in self.ball_trajectory:
+            if isinstance(ball_info, dict) and "confidence" in ball_info:
+                # Enhanced trajectory with confidence information
+                confidence = ball_info.get("confidence", 0.5)
+                source = ball_info.get("source", "unknown")
+
+                # Weight confidence based on source
+                if source == "specialized":
+                    confidence *= 1.2  # Boost specialized detections
+                    specialized_count += 1
+                elif "interpolated" in source:
+                    confidence *= 0.8  # Reduce interpolated confidence
+                    interpolated_count += 1
+
+                total_confidence += min(1.0, confidence)
+            else:
+                # Legacy trajectory format
+                total_confidence += 0.5  # Default confidence
+
+        avg_confidence = total_confidence / len(self.ball_trajectory)
+
+        # Bonus for having more specialized detections
+        specialized_ratio = specialized_count / len(self.ball_trajectory)
+        specialized_bonus = specialized_ratio * 0.1
+
+        # Penalty for having too many interpolated detections
+        interpolated_ratio = interpolated_count / len(self.ball_trajectory)
+        interpolated_penalty = interpolated_ratio * 0.1
+
+        final_confidence = avg_confidence + specialized_bonus - interpolated_penalty
+
+        return max(0.0, min(1.0, final_confidence))
 
     def _calculate_enhanced_direction_consistency(self, goal_side, field_context):
         """
@@ -412,8 +573,8 @@ class GoalDetector:
 
             if len(self.ball_trajectory) >= 3:
                 # Calculate approach vector towards actual goal center
-                start_pos = self.ball_trajectory[0]
-                end_pos = self.ball_trajectory[-1]
+                start_pos = self.ball_trajectory[0]["position"]
+                end_pos = self.ball_trajectory[-1]["position"]
 
                 # Vector from start to goal center
                 ideal_vector = (
@@ -485,7 +646,9 @@ class GoalDetector:
 
         movements = []
         for i in range(1, len(self.ball_trajectory)):
-            x_movement = self.ball_trajectory[i][0] - self.ball_trajectory[i - 1][0]
+            current_pos = self.ball_trajectory[i]["position"]
+            prev_pos = self.ball_trajectory[i - 1]["position"]
+            x_movement = current_pos[0] - prev_pos[0]
             movements.append(x_movement)
 
         if goal_side == "left":
@@ -504,8 +667,10 @@ class GoalDetector:
 
         speeds = []
         for i in range(1, len(self.ball_trajectory)):
-            dx = self.ball_trajectory[i][0] - self.ball_trajectory[i - 1][0]
-            dy = self.ball_trajectory[i][1] - self.ball_trajectory[i - 1][1]
+            current_pos = self.ball_trajectory[i]["position"]
+            prev_pos = self.ball_trajectory[i - 1]["position"]
+            dx = current_pos[0] - prev_pos[0]
+            dy = current_pos[1] - prev_pos[1]
             speed = np.sqrt(dx * dx + dy * dy)
             speeds.append(speed)
 
@@ -530,13 +695,17 @@ class GoalDetector:
         direction_changes = 0
         for i in range(2, len(self.ball_trajectory)):
             # Calculate direction vectors
+            pos_i_2 = self.ball_trajectory[i - 2]["position"]
+            pos_i_1 = self.ball_trajectory[i - 1]["position"]
+            pos_i = self.ball_trajectory[i]["position"]
+
             v1 = (
-                self.ball_trajectory[i - 1][0] - self.ball_trajectory[i - 2][0],
-                self.ball_trajectory[i - 1][1] - self.ball_trajectory[i - 2][1],
+                pos_i_1[0] - pos_i_2[0],
+                pos_i_1[1] - pos_i_2[1],
             )
             v2 = (
-                self.ball_trajectory[i][0] - self.ball_trajectory[i - 1][0],
-                self.ball_trajectory[i][1] - self.ball_trajectory[i - 1][1],
+                pos_i[0] - pos_i_1[0],
+                pos_i[1] - pos_i_1[1],
             )
 
             # Check for significant direction change
@@ -553,8 +722,8 @@ class GoalDetector:
             return 1.0
 
         # Get start and end positions
-        start_pos = self.ball_trajectory[0]
-        end_pos = self.ball_trajectory[-1]
+        start_pos = self.ball_trajectory[0]["position"]
+        end_pos = self.ball_trajectory[-1]["position"]
 
         # Calculate approach vector
         approach_vector = (end_pos[0] - start_pos[0], end_pos[1] - start_pos[1])
@@ -733,14 +902,14 @@ class GoalDetector:
             ) / 2
 
             # Calculate approach vector from trajectory start to goal center
-            start_pos = self.ball_trajectory[0]
+            start_pos = self.ball_trajectory[0]["position"]
             approach_vector = (
                 goal_center_x - start_pos[0],
                 goal_center_y - start_pos[1],
             )
 
             # Calculate actual trajectory vector
-            end_pos = self.ball_trajectory[-1]
+            end_pos = self.ball_trajectory[-1]["position"]
             trajectory_vector = (end_pos[0] - start_pos[0], end_pos[1] - start_pos[1])
 
             # Calculate angle between ideal approach and actual trajectory
@@ -806,13 +975,17 @@ class GoalDetector:
             # Calculate trajectory smoothness and consistency
             direction_changes = 0
             for i in range(2, len(self.ball_trajectory)):
+                pos_i_2 = self.ball_trajectory[i - 2]["position"]
+                pos_i_1 = self.ball_trajectory[i - 1]["position"]
+                pos_i = self.ball_trajectory[i]["position"]
+
                 v1 = (
-                    self.ball_trajectory[i - 1][0] - self.ball_trajectory[i - 2][0],
-                    self.ball_trajectory[i - 1][1] - self.ball_trajectory[i - 2][1],
+                    pos_i_1[0] - pos_i_2[0],
+                    pos_i_1[1] - pos_i_2[1],
                 )
                 v2 = (
-                    self.ball_trajectory[i][0] - self.ball_trajectory[i - 1][0],
-                    self.ball_trajectory[i][1] - self.ball_trajectory[i - 1][1],
+                    pos_i[0] - pos_i_1[0],
+                    pos_i[1] - pos_i_1[1],
                 )
 
                 if (v1[0] * v2[0] + v1[1] * v2[1]) < 0:

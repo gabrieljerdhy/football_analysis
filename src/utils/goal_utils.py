@@ -56,7 +56,7 @@ def load_manual_goals(goals_config_path):
     return manual_goals
 
 
-def create_goals_template(output_path="goals_config.csv"):
+def create_goals_template(output_path="data/goals_config.csv"):
     """
     Create a template CSV file for manual goal configuration.
 
@@ -104,16 +104,22 @@ def create_goals_template(output_path="goals_config.csv"):
     print("Edit this file to add manual goals, then use it with --goals-config option")
 
 
-def calculate_final_goal_stats(pass_counter, enhanced_goal_stats, manual_goals):
+def calculate_final_goal_stats(
+    pass_counter, enhanced_goal_stats, manual_goals, scoreboard_analyzer=None
+):
     """
     Calculate final goal statistics based on priority system.
-    The final goal count is determined by manual goals if available, otherwise enhanced goals,
-    otherwise regular detection goals.
+    The final goal count is determined by:
+    1. Manual goals (highest priority)
+    2. Scoreboard-extracted scores (if available and reliable)
+    3. Enhanced goal detection
+    4. Regular goal detection (lowest priority)
 
     Args:
         pass_counter: PassCounter instance with regular goal detection
         enhanced_goal_stats: Enhanced goal statistics from GoalDetector
         manual_goals: List of manual goals loaded from CSV
+        scoreboard_analyzer: ScoreboardAnalyzer instance (optional)
 
     Returns:
         tuple: (final_team_goals, final_player_goals)
@@ -122,14 +128,26 @@ def calculate_final_goal_stats(pass_counter, enhanced_goal_stats, manual_goals):
     final_team_goals = {1: 0, 2: 0}
     final_player_goals = {}
 
+    # Get scoreboard analysis results
+    scoreboard_score = None
+    if scoreboard_analyzer and scoreboard_analyzer.is_scoreboard_available():
+        scoreboard_score = scoreboard_analyzer.get_final_score()
+
     print("📊 Calculating final goal statistics...")
     print(f"   Manual goals provided: {len(manual_goals) if manual_goals else 0}")
+    if scoreboard_score:
+        print(
+            f"   Scoreboard score detected: {scoreboard_score['team1_score']}-{scoreboard_score['team2_score']} (confidence: {scoreboard_score['confidence']:.2f})"
+        )
+    else:
+        print("   Scoreboard score: Not detected")
     print(
         f"   Enhanced goals detected: {enhanced_goal_stats.get('final_total_goals', 0) if enhanced_goal_stats else 0}"
     )
     print(f"   Regular goals detected: {sum(pass_counter.team_goals.values())}")
 
-    # If manual goals are provided, use them as the final count
+    # Priority system for determining final goal count
+    # 1. Manual goals (highest priority)
     if manual_goals:
         print("📊 Using manual goals as final goal count")
         for goal in manual_goals:
@@ -144,22 +162,37 @@ def calculate_final_goal_stats(pass_counter, enhanced_goal_stats, manual_goals):
                 if player_id not in final_player_goals:
                     final_player_goals[player_id] = {"goals": 0, "team": team}
                 final_player_goals[player_id]["goals"] += 1
-    else:
-        # Use enhanced goals if available, otherwise regular goals
-        if enhanced_goal_stats and enhanced_goal_stats.get("final_total_goals", 0) > 0:
+
+    # 2. Scoreboard-extracted scores (if available and reliable)
+    elif scoreboard_score and scoreboard_score.get("confidence", 0) >= 0.7:
+        print("📊 Using scoreboard-extracted scores as final goal count")
+        final_team_goals[1] = scoreboard_score["team1_score"]
+        final_team_goals[2] = scoreboard_score["team2_score"]
+        # Note: Scoreboard doesn't provide player-specific goals, so final_player_goals remains empty
+        print(f"   Scoreboard confidence: {scoreboard_score['confidence']:.2f}")
+        print(f"   Detection rate: {scoreboard_score.get('detection_rate', 0):.2f}")
+
+    # 3. Enhanced goal detection (prioritize over regular detection even if 0 goals)
+    elif enhanced_goal_stats is not None:
+        # Enhanced detection is more accurate, use it even if it detects 0 goals
+        if enhanced_goal_stats.get("final_total_goals", 0) >= 0:
             print("📊 Using enhanced goal detection final counts as final goal count")
             final_team_goals = enhanced_goal_stats["final_team_goals"].copy()
             final_player_goals = enhanced_goal_stats["final_player_goals"].copy()
-        elif enhanced_goal_stats and enhanced_goal_stats.get("total_goals", 0) > 0:
+        else:
             print(
                 "📊 Using enhanced goal detection real-time counts as final goal count"
             )
             final_team_goals = enhanced_goal_stats["team_goals"].copy()
             final_player_goals = enhanced_goal_stats["player_goals"].copy()
-        else:
-            print("📊 Using regular goal detection as final goal count")
-            final_team_goals = pass_counter.team_goals.copy()
-            final_player_goals = pass_counter.player_goals.copy()
+
+    # 4. Regular goal detection (lowest priority - only if enhanced detection unavailable)
+    else:
+        print(
+            "📊 Using regular goal detection as final goal count (enhanced detection unavailable)"
+        )
+        final_team_goals = pass_counter.team_goals.copy()
+        final_player_goals = pass_counter.player_goals.copy()
 
     # Print summary
     total_final_goals = sum(final_team_goals.values())
@@ -185,7 +218,8 @@ def export_consolidated_goal_statistics(
     final_team_goals,
     final_player_goals,
     tackle_counter,
-    output_dir="output",
+    scoreboard_analyzer=None,
+    output_dir="data/output",
     uploader=None,
     bucket_name=None,
     upload_folder_prefix="football_analysis",
@@ -201,6 +235,7 @@ def export_consolidated_goal_statistics(
         final_team_goals (dict): Final team goal counts
         final_player_goals (dict): Final player goal counts
         tackle_counter: TackleCounter instance
+        scoreboard_analyzer: ScoreboardAnalyzer instance (optional)
         output_dir (str): Output directory for CSV files
         uploader: DigitalOceanSpacesUploader instance (optional)
         bucket_name (str): Bucket name for upload (optional)
@@ -213,6 +248,13 @@ def export_consolidated_goal_statistics(
 
     os.makedirs(output_dir, exist_ok=True)
 
+    # Get scoreboard information
+    scoreboard_score = None
+    scoreboard_stats = {}
+    if scoreboard_analyzer and scoreboard_analyzer.is_scoreboard_available():
+        scoreboard_score = scoreboard_analyzer.get_final_score()
+        scoreboard_stats = scoreboard_analyzer.get_statistics()
+
     # Consolidated team statistics CSV
     team_csv_path = os.path.join(output_dir, f"{video_name}_team_stats.csv")
 
@@ -222,11 +264,14 @@ def export_consolidated_goal_statistics(
             "passes",
             "goals_regular",
             "goals_enhanced",
+            "goals_scoreboard",
             "goals_final",
             "tackles",
             "interceptions",
             "goal_events_count",
             "avg_goal_confidence",
+            "scoreboard_detected",
+            "scoreboard_confidence",
         ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
@@ -242,6 +287,16 @@ def export_consolidated_goal_statistics(
                 event.get("confidence_score", 0) for event in team_goal_events
             ) / max(1, len(team_goal_events))
 
+            # Get scoreboard goals for this team
+            scoreboard_goals = 0
+            scoreboard_confidence = 0
+            if scoreboard_score:
+                if team_id == 1:
+                    scoreboard_goals = scoreboard_score.get("team1_score", 0)
+                else:
+                    scoreboard_goals = scoreboard_score.get("team2_score", 0)
+                scoreboard_confidence = scoreboard_score.get("confidence", 0)
+
             writer.writerow(
                 {
                     "team": team_id,
@@ -250,11 +305,14 @@ def export_consolidated_goal_statistics(
                     "goals_enhanced": enhanced_goal_stats.get("team_goals", {}).get(
                         team_id, 0
                     ),
+                    "goals_scoreboard": scoreboard_goals,
                     "goals_final": final_team_goals.get(team_id, 0),
                     "tackles": tackle_counter.team_tackles.get(team_id, 0),
                     "interceptions": tackle_counter.team_interceptions.get(team_id, 0),
                     "goal_events_count": len(team_goal_events),
                     "avg_goal_confidence": round(avg_confidence, 3),
+                    "scoreboard_detected": bool(scoreboard_score),
+                    "scoreboard_confidence": round(scoreboard_confidence, 3),
                 }
             )
 
@@ -282,6 +340,8 @@ def export_consolidated_goal_statistics(
             "interceptions",
             "goal_events_count",
             "avg_goal_confidence",
+            "scoreboard_detected",
+            "scoreboard_confidence",
         ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
@@ -334,6 +394,12 @@ def export_consolidated_goal_statistics(
                     ).get("interceptions", 0),
                     "goal_events_count": len(player_goal_events),
                     "avg_goal_confidence": round(avg_confidence, 3),
+                    "scoreboard_detected": bool(scoreboard_score),
+                    "scoreboard_confidence": (
+                        round(scoreboard_score.get("confidence", 0), 3)
+                        if scoreboard_score
+                        else 0
+                    ),
                 }
             )
 

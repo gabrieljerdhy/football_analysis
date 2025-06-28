@@ -9,18 +9,100 @@ import supervision as sv
 from ultralytics import YOLO
 
 sys.path.append("../")
-from src.jersey_number_detector import JerseyNumberDetector
-from src.utils import get_bbox_width, get_center_of_bbox, get_foot_position
+try:
+    from src.config import DEFAULT_BALL_DETECTION_CONFIG, BallDetectionConfig
+    from src.jersey_number_detector import JerseyNumberDetector
+    from src.utils import get_bbox_width, get_center_of_bbox, get_foot_position
+except ImportError:
+    # Handle relative imports when running from different contexts
+    import os
+
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(current_dir)
+    sys.path.insert(0, parent_dir)
+
+    from config import DEFAULT_BALL_DETECTION_CONFIG, BallDetectionConfig
+    from jersey_number_detector import JerseyNumberDetector
+    from utils import get_bbox_width, get_center_of_bbox, get_foot_position
 
 
 class Tracker:
-    def __init__(self, model_path, enable_jersey_detection=True):
-        self.model = YOLO(model_path)
+    def __init__(
+        self,
+        model_path=None,
+        enable_jersey_detection=True,
+        ball_model_path=None,
+        enable_enhanced_ball_detection=True,
+        config=None,
+    ):
+        """
+        Initialize the Tracker with enhanced ball detection capabilities.
+
+        Args:
+            model_path (str): Path to the main detection model (players, referees, ball)
+            enable_jersey_detection (bool): Enable jersey number detection
+            ball_model_path (str): Path to specialized ball detection model (optional)
+            enable_enhanced_ball_detection (bool): Enable enhanced ball detection using specialized model
+            config (BallDetectionConfig): Configuration object for ball detection
+        """
+        # Use configuration if provided, otherwise use defaults
+        if config is None:
+            config = DEFAULT_BALL_DETECTION_CONFIG
+
+        self.config = config
+
+        # Override config with explicit parameters if provided
+        if model_path is not None:
+            self.config.general_model_path = model_path
+        if ball_model_path is not None:
+            self.config.ball_model_path = ball_model_path
+        if enable_jersey_detection is not None:
+            self.config.enable_jersey_detection = enable_jersey_detection
+        if enable_enhanced_ball_detection is not None:
+            self.config.enable_enhanced_ball_detection = enable_enhanced_ball_detection
+
+        # Initialize main model
+        self.model = YOLO(self.config.general_model_path)
         self.tracker = sv.ByteTrack()
 
+        # Enhanced ball detection configuration
+        self.enable_enhanced_ball_detection = self.config.enable_enhanced_ball_detection
+        self.ball_model = None
+        self.ball_model_path = self.config.ball_model_path
+
+        # Initialize specialized ball detection model
+        if self.enable_enhanced_ball_detection:
+            if os.path.exists(self.ball_model_path):
+                try:
+                    self.ball_model = YOLO(self.ball_model_path)
+                    print(
+                        f"✅ Enhanced ball detection enabled with model: {self.ball_model_path}"
+                    )
+                except Exception as e:
+                    print(f"⚠️ Enhanced ball detection disabled due to error: {e}")
+                    self.enable_enhanced_ball_detection = False
+                    self.ball_model = None
+            else:
+                print(
+                    f"⚠️ Enhanced ball detection disabled: {self.ball_model_path} not found"
+                )
+                self.enable_enhanced_ball_detection = False
+
+        # Ball detection fusion parameters from config
+        self.ball_confidence_threshold = self.config.ball_confidence_threshold
+        self.ball_fusion_confidence_threshold = (
+            self.config.ball_fusion_confidence_threshold
+        )
+        self.ball_temporal_consistency_frames = (
+            self.config.ball_temporal_consistency_frames
+        )
+        self.ball_detection_history = (
+            []
+        )  # Store recent ball detections for consistency checks
+
         # Initialize jersey number detector
-        self.enable_jersey_detection = enable_jersey_detection
-        if enable_jersey_detection:
+        self.enable_jersey_detection = self.config.enable_jersey_detection
+        if self.enable_jersey_detection:
             try:
                 self.jersey_detector = JerseyNumberDetector(
                     confidence_threshold=0.4,
@@ -47,27 +129,244 @@ class Tracker:
                     tracks[object][frame_num][track_id]["position"] = position
 
     def interpolate_ball_positions(self, ball_positions):
-        ball_positions = [x.get(1, {}).get("bbox", []) for x in ball_positions]
-        df_ball_positions = pd.DataFrame(
-            ball_positions, columns=["x1", "y1", "x2", "y2"]
-        )
+        """
+        Enhanced ball position interpolation that considers detection confidence and source.
+        """
+        # Extract ball data with enhanced information
+        ball_data = []
+        confidences = []
+        sources = []
 
-        # Interpolate missing values
-        df_ball_positions = df_ball_positions.interpolate()
+        for x in ball_positions:
+            ball_info = x.get(1, {})
+            bbox = ball_info.get("bbox", [])
+            confidence = ball_info.get("confidence", 0.0)
+            source = ball_info.get("source", "unknown")
+
+            ball_data.append(bbox)
+            confidences.append(confidence)
+            sources.append(source)
+
+        # Create DataFrame with enhanced information
+        df_ball_positions = pd.DataFrame(ball_data, columns=["x1", "y1", "x2", "y2"])
+        df_confidences = pd.Series(confidences)
+        df_sources = pd.Series(sources)
+
+        # Enhanced interpolation strategy
+        # 1. First, try to interpolate only high-confidence detections
+        high_conf_mask = df_confidences >= self.ball_fusion_confidence_threshold
+        if high_conf_mask.sum() > 2:  # Need at least 2 points for interpolation
+            # Create a copy for high-confidence interpolation
+            df_high_conf = df_ball_positions.copy()
+            df_high_conf[~high_conf_mask] = np.nan
+            df_high_conf_interpolated = df_high_conf.interpolate(
+                method="linear", limit_direction="both"
+            )
+
+            # Use high-confidence interpolation where available
+            for i in range(len(df_ball_positions)):
+                if (
+                    pd.isna(df_ball_positions.iloc[i]).any()
+                    and not pd.isna(df_high_conf_interpolated.iloc[i]).any()
+                ):
+                    df_ball_positions.iloc[i] = df_high_conf_interpolated.iloc[i]
+                    df_confidences.iloc[i] = 0.4  # Mark as interpolated
+                    df_sources.iloc[i] = "interpolated_high_conf"
+
+        # 2. Standard interpolation for remaining gaps
+        df_ball_positions = df_ball_positions.interpolate(method="linear")
         df_ball_positions = df_ball_positions.bfill()
+        df_ball_positions = df_ball_positions.ffill()
 
-        ball_positions = [
-            {1: {"bbox": x}} for x in df_ball_positions.to_numpy().tolist()
-        ]
+        # Mark remaining interpolated values
+        for i in range(len(df_confidences)):
+            if (
+                df_confidences.iloc[i] == 0.0
+                and not pd.isna(df_ball_positions.iloc[i]).any()
+            ):
+                df_confidences.iloc[i] = (
+                    0.2  # Low confidence for standard interpolation
+                )
+                df_sources.iloc[i] = "interpolated_standard"
 
-        # Calculate positions for interpolated ball positions
-        for ball_track in ball_positions:
-            if 1 in ball_track and ball_track[1]:
+        # Reconstruct ball positions with enhanced information
+        enhanced_ball_positions = []
+        for i, (bbox_data, conf, source) in enumerate(
+            zip(df_ball_positions.to_numpy(), df_confidences, df_sources)
+        ):
+            if not pd.isna(bbox_data).any():
+                ball_track = {
+                    1: {
+                        "bbox": bbox_data.tolist(),
+                        "confidence": conf,
+                        "source": source,
+                    }
+                }
+
+                # Calculate position
                 bbox = ball_track[1]["bbox"]
                 position = get_center_of_bbox(bbox)
                 ball_track[1]["position"] = position
 
-        return ball_positions
+                enhanced_ball_positions.append(ball_track)
+            else:
+                enhanced_ball_positions.append({})
+
+        return enhanced_ball_positions
+
+    def detect_ball_enhanced(self, frames, frame_indices=None):
+        """
+        Enhanced ball detection using specialized ball model with fusion logic.
+
+        Args:
+            frames: List of video frames
+            frame_indices: Optional list of frame indices for tracking history
+
+        Returns:
+            List of enhanced ball detections per frame
+        """
+        if not self.enable_enhanced_ball_detection or self.ball_model is None:
+            return None
+
+        batch_size = min(10, len(frames))
+        ball_detections = []
+
+        for i in range(0, len(frames), batch_size):
+            batch_frames = frames[i : i + batch_size]
+            # Use higher confidence for specialized ball model
+            detections_batch = self.ball_model.predict(
+                batch_frames, conf=self.ball_confidence_threshold
+            )
+            ball_detections += detections_batch
+
+        return ball_detections
+
+    def fuse_ball_detections(self, general_detection, ball_detection, frame_num):
+        """
+        Fuse ball detections from general and specialized models.
+
+        Args:
+            general_detection: Detection from general model
+            ball_detection: Detection from specialized ball model
+            frame_num: Current frame number
+
+        Returns:
+            Best ball detection with confidence score
+        """
+        best_ball_bbox = None
+        best_confidence = 0.0
+        detection_source = "none"
+
+        # Extract ball detections from general model
+        general_ball_detections = []
+        if general_detection.boxes is not None:
+            boxes = general_detection.boxes.xyxy.cpu().numpy()
+            confidences = general_detection.boxes.conf.cpu().numpy()
+            class_ids = general_detection.boxes.cls.cpu().numpy()
+
+            cls_names = general_detection.names
+            cls_names_inv = {v: k for k, v in cls_names.items()}
+
+            if "ball" in cls_names_inv:
+                ball_class_id = cls_names_inv["ball"]
+                for i, (box, conf, class_id) in enumerate(
+                    zip(boxes, confidences, class_ids)
+                ):
+                    if (
+                        class_id == ball_class_id
+                        and conf >= self.ball_confidence_threshold
+                    ):
+                        general_ball_detections.append(
+                            {
+                                "bbox": box.tolist(),
+                                "confidence": conf,
+                                "source": "general",
+                            }
+                        )
+
+        # Extract ball detections from specialized model
+        specialized_ball_detections = []
+        if ball_detection is not None and ball_detection.boxes is not None:
+            boxes = ball_detection.boxes.xyxy.cpu().numpy()
+            confidences = ball_detection.boxes.conf.cpu().numpy()
+
+            for i, (box, conf) in enumerate(zip(boxes, confidences)):
+                if conf >= self.ball_confidence_threshold:
+                    specialized_ball_detections.append(
+                        {
+                            "bbox": box.tolist(),
+                            "confidence": conf,
+                            "source": "specialized",
+                        }
+                    )
+
+        # Select best detection based on confidence and temporal consistency
+        all_detections = general_ball_detections + specialized_ball_detections
+
+        if all_detections:
+            # Prefer specialized model if confidence is high enough
+            specialized_detections = [
+                d for d in all_detections if d["source"] == "specialized"
+            ]
+            if specialized_detections:
+                # Use highest confidence specialized detection
+                best_detection = max(
+                    specialized_detections, key=lambda x: x["confidence"]
+                )
+                if (
+                    best_detection["confidence"]
+                    >= self.ball_fusion_confidence_threshold
+                ):
+                    best_ball_bbox = best_detection["bbox"]
+                    best_confidence = best_detection["confidence"]
+                    detection_source = "specialized"
+
+            # Fall back to general model if specialized model confidence is low
+            if best_ball_bbox is None and general_ball_detections:
+                best_detection = max(
+                    general_ball_detections, key=lambda x: x["confidence"]
+                )
+                best_ball_bbox = best_detection["bbox"]
+                best_confidence = best_detection["confidence"]
+                detection_source = "general"
+
+            # If still no detection from general, use best specialized
+            if best_ball_bbox is None and specialized_detections:
+                best_detection = max(
+                    specialized_detections, key=lambda x: x["confidence"]
+                )
+                best_ball_bbox = best_detection["bbox"]
+                best_confidence = best_detection["confidence"]
+                detection_source = "specialized_fallback"
+
+        # Update detection history for temporal consistency
+        if best_ball_bbox is not None:
+            detection_info = {
+                "frame_num": frame_num,
+                "bbox": best_ball_bbox,
+                "confidence": best_confidence,
+                "source": detection_source,
+            }
+            self.ball_detection_history.append(detection_info)
+
+            # Keep only recent history
+            if (
+                len(self.ball_detection_history)
+                > self.ball_temporal_consistency_frames * 2
+            ):
+                self.ball_detection_history = self.ball_detection_history[
+                    -self.ball_temporal_consistency_frames * 2 :
+                ]
+
+        return (
+            {
+                "bbox": best_ball_bbox,
+                "confidence": best_confidence,
+                "source": detection_source,
+            }
+            if best_ball_bbox is not None
+            else None
+        )
 
     def detect_frames(self, frames):
         batch_size = 20
@@ -101,7 +400,7 @@ class Tracker:
     def get_object_tracks_memory_efficient(
         self, frames, read_from_stub=False, stub_path=None, progress_callback=None
     ):
-        """Memory-efficient version of get_object_tracks."""
+        """Memory-efficient version of get_object_tracks with enhanced ball detection."""
 
         if read_from_stub and stub_path is not None and os.path.exists(stub_path):
             with open(stub_path, "rb") as f:
@@ -110,6 +409,11 @@ class Tracker:
 
         # Use memory-efficient detection
         detections = self.detect_frames_memory_efficient(frames, progress_callback)
+
+        # Get enhanced ball detections if enabled
+        ball_detections = None
+        if self.enable_enhanced_ball_detection:
+            ball_detections = self.detect_ball_enhanced(frames)
 
         tracks = {"players": [], "referees": [], "ball": []}
 
@@ -145,12 +449,28 @@ class Tracker:
                 if cls_id == cls_names_inv["referee"]:
                     tracks["referees"][frame_num][track_id] = {"bbox": bbox}
 
-            for frame_detection in detection_supervision:
-                bbox = frame_detection[0].tolist()
-                cls_id = frame_detection[3]
+            # Enhanced ball detection with fusion logic
+            ball_detection_result = None
+            if ball_detections and frame_num < len(ball_detections):
+                ball_detection_result = self.fuse_ball_detections(
+                    detection, ball_detections[frame_num], frame_num
+                )
 
-                if cls_id == cls_names_inv["ball"]:
-                    tracks["ball"][frame_num][1] = {"bbox": bbox}
+            # Use enhanced ball detection if available, otherwise fall back to original
+            if ball_detection_result and ball_detection_result["bbox"] is not None:
+                tracks["ball"][frame_num][1] = {
+                    "bbox": ball_detection_result["bbox"],
+                    "confidence": ball_detection_result["confidence"],
+                    "source": ball_detection_result["source"],
+                }
+            else:
+                # Fall back to original ball detection from general model
+                for frame_detection in detection_supervision:
+                    bbox = frame_detection[0].tolist()
+                    cls_id = frame_detection[3]
+
+                    if cls_id == cls_names_inv["ball"]:
+                        tracks["ball"][frame_num][1] = {"bbox": bbox}
 
         if stub_path is not None:
             with open(stub_path, "wb") as f:
@@ -159,6 +479,7 @@ class Tracker:
         return tracks
 
     def get_object_tracks(self, frames, read_from_stub=False, stub_path=None):
+        """Enhanced object tracking with improved ball detection."""
 
         if read_from_stub and stub_path is not None and os.path.exists(stub_path):
             with open(stub_path, "rb") as f:
@@ -167,13 +488,18 @@ class Tracker:
 
         detections = self.detect_frames(frames)
 
+        # Get enhanced ball detections if enabled
+        ball_detections = None
+        if self.enable_enhanced_ball_detection:
+            ball_detections = self.detect_ball_enhanced(frames)
+
         tracks = {"players": [], "referees": [], "ball": []}
 
         for frame_num, detection in enumerate(detections):
             cls_names = detection.names
             cls_names_inv = {v: k for k, v in cls_names.items()}
 
-            # Covert to supervision Detection format
+            # Convert to supervision Detection format
             detection_supervision = sv.Detections.from_ultralytics(detection)
 
             # Convert GoalKeeper to player object
@@ -201,12 +527,28 @@ class Tracker:
                 if cls_id == cls_names_inv["referee"]:
                     tracks["referees"][frame_num][track_id] = {"bbox": bbox}
 
-            for frame_detection in detection_supervision:
-                bbox = frame_detection[0].tolist()
-                cls_id = frame_detection[3]
+            # Enhanced ball detection with fusion logic
+            ball_detection_result = None
+            if ball_detections and frame_num < len(ball_detections):
+                ball_detection_result = self.fuse_ball_detections(
+                    detection, ball_detections[frame_num], frame_num
+                )
 
-                if cls_id == cls_names_inv["ball"]:
-                    tracks["ball"][frame_num][1] = {"bbox": bbox}
+            # Use enhanced ball detection if available, otherwise fall back to original
+            if ball_detection_result and ball_detection_result["bbox"] is not None:
+                tracks["ball"][frame_num][1] = {
+                    "bbox": ball_detection_result["bbox"],
+                    "confidence": ball_detection_result["confidence"],
+                    "source": ball_detection_result["source"],
+                }
+            else:
+                # Fall back to original ball detection from general model
+                for frame_detection in detection_supervision:
+                    bbox = frame_detection[0].tolist()
+                    cls_id = frame_detection[3]
+
+                    if cls_id == cls_names_inv["ball"]:
+                        tracks["ball"][frame_num][1] = {"bbox": bbox}
 
         if stub_path is not None:
             with open(stub_path, "wb") as f:

@@ -15,6 +15,7 @@ from src.goal_detection import FieldKeypointsDetector, GoalDetector
 from src.pass_counter.pass_counter import PassCounter
 from src.pass_counter.tackle_counter import TackleCounter
 from src.player_ball_assigner import PlayerBallAssigner
+from src.scoreboard_detection import ScoreboardAnalyzer
 from src.speed_and_distance_estimator import SpeedAndDistance_Estimator
 from src.team_assigner import TeamAssigner
 from src.trackers import Tracker
@@ -52,6 +53,7 @@ def main(
     goals_config=None,
     enable_camera_movement=False,
     enable_speed_distance=False,
+    enable_scoreboard_detection=False,
     memory_efficient=False,
     batch_size=50,
     memory_limit=8.0,
@@ -184,6 +186,7 @@ def main(
                 goals_config=goals_config,
                 enable_camera_movement=enable_camera_movement,
                 enable_speed_distance=enable_speed_distance,
+                enable_scoreboard_detection=enable_scoreboard_detection,
                 batch_size=batch_size,
                 video_info=video_info,
                 uploader=uploader,
@@ -233,8 +236,13 @@ def main(
     video_frames = read_video(input_video_path)
     print(f"Loaded {len(video_frames)} frames")
 
-    # Initialize Tracker with jersey number detection
-    tracker = Tracker("data/models/best_detect.pt", enable_jersey_detection=True)
+    # Initialize Tracker with enhanced ball detection and jersey number detection
+    tracker = Tracker(
+        "data/models/best_detect.pt",
+        enable_jersey_detection=True,
+        ball_model_path="data/models/best_ball.pt",
+        enable_enhanced_ball_detection=True,
+    )
 
     # Initialize Enhanced Goal Detection System
     field_keypoints_detector = FieldKeypointsDetector("data/models/best_keypoint.pt")
@@ -244,6 +252,16 @@ def main(
     goal_detector.set_keypoint_optimization(
         detection_interval=5, stability_threshold=10
     )
+
+    # Initialize Scoreboard Detection System
+    scoreboard_analyzer = None
+    if enable_scoreboard_detection:
+        print("🎯 Initializing scoreboard detection system...")
+        scoreboard_analyzer = ScoreboardAnalyzer(
+            detection_interval=30,  # Analyze every 30 frames for efficiency
+            min_detection_confidence=0.6,
+            min_extraction_confidence=0.6,
+        )
 
     # Load manual goals if provided
     manual_goals = load_manual_goals(goals_config)
@@ -335,8 +353,9 @@ def main(
                 team_assigner.team_colors[team]
             )
 
-    # Initialize pass counter
-    pass_counter = PassCounter()
+    # Initialize pass counter with video dimensions
+    video_height, video_width = video_frames[0].shape[:2]
+    pass_counter = PassCounter(video_width=video_width, video_height=video_height)
 
     # Initialize tackle counter
     tackle_counter = TackleCounter()
@@ -363,9 +382,19 @@ def main(
                 # Update field keypoints for current frame
                 goal_detector.update_keypoints(video_frames[frame_num])
 
-                # Detect goals using enhanced system
+                # Get enhanced ball information from tracks
+                ball_info = tracks["ball"][frame_num].get(1, {})
+                ball_confidence = ball_info.get("confidence")
+                ball_source = ball_info.get("source")
+
+                # Detect goals using enhanced system with ball detection quality
                 goal_event = goal_detector.detect_goal(
-                    ball_position, assigned_player, current_team, frame_num
+                    ball_position,
+                    assigned_player,
+                    current_team,
+                    frame_num,
+                    ball_confidence=ball_confidence,
+                    ball_source=ball_source,
                 )
 
                 # Also use the old system for comparison (optional)
@@ -401,7 +430,7 @@ def main(
 
     # Calculate final goal statistics using priority system
     final_team_goals, final_player_goals = calculate_final_goal_stats(
-        pass_counter, enhanced_goal_stats, manual_goals
+        pass_counter, enhanced_goal_stats, manual_goals, scoreboard_analyzer
     )
 
     # Update goal detector with final counts for consistency
@@ -449,6 +478,7 @@ def main(
         final_team_goals,
         final_player_goals,
         tackle_counter,
+        scoreboard_analyzer=scoreboard_analyzer,
         uploader=uploader,
         bucket_name=spaces_bucket,
         upload_folder_prefix=spaces_folder_prefix,
@@ -584,6 +614,7 @@ def process_video_memory_efficient(
     goals_config,
     enable_camera_movement,
     enable_speed_distance,
+    enable_scoreboard_detection,
     batch_size,
     video_info,
     uploader=None,
@@ -607,8 +638,13 @@ def process_video_memory_efficient(
 
     print("\n🔧 Initializing components...")
 
-    # Initialize Tracker with jersey number detection
-    tracker = Tracker("data/models/best_detect.pt", enable_jersey_detection=True)
+    # Initialize Tracker with enhanced ball detection and jersey number detection
+    tracker = Tracker(
+        "data/models/best_detect.pt",
+        enable_jersey_detection=True,
+        ball_model_path="data/models/best_ball.pt",
+        enable_enhanced_ball_detection=True,
+    )
 
     # Initialize Enhanced Goal Detection System
     field_keypoints_detector = FieldKeypointsDetector("data/models/best_keypoint.pt")
@@ -620,6 +656,18 @@ def process_video_memory_efficient(
     goal_detector.set_keypoint_optimization(
         detection_interval=detection_interval, stability_threshold=15
     )
+
+    # Initialize Scoreboard Detection System
+    scoreboard_analyzer = None
+    if enable_scoreboard_detection:
+        print("🎯 Initializing scoreboard detection system...")
+        # Use larger intervals for memory-efficient processing
+        scoreboard_interval = 60 if video_info.get("total_frames", 0) > 50000 else 30
+        scoreboard_analyzer = ScoreboardAnalyzer(
+            detection_interval=scoreboard_interval,
+            min_detection_confidence=0.6,
+            min_extraction_confidence=0.6,
+        )
 
     # Load manual goals if provided
     manual_goals = load_manual_goals(goals_config)
@@ -694,6 +742,7 @@ def process_video_memory_efficient(
         batch_size,
         goal_detector,
         manual_goals,
+        scoreboard_analyzer,
         uploader,
         spaces_bucket,
         spaces_folder_prefix,
@@ -854,11 +903,14 @@ def process_team_assignment_and_ball_tracking(
     batch_size,
     goal_detector,
     manual_goals,
+    scoreboard_analyzer=None,
     uploader=None,
     spaces_bucket=None,
     spaces_folder_prefix="football_analysis",
 ):
     """Process team assignment and ball tracking in batches."""
+    import cv2
+
     from src.utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
 
     # Team assignment - need to get a frame for color analysis
@@ -1020,8 +1072,13 @@ def process_team_assignment_and_ball_tracking(
     player_assigner = PlayerBallAssigner()
     team_ball_control = []
 
-    # Initialize counters
-    pass_counter = PassCounter()
+    # Initialize counters with video dimensions
+    cap = cv2.VideoCapture(input_video_path)
+    video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+
+    pass_counter = PassCounter(video_width=video_width, video_height=video_height)
     tackle_counter = TackleCounter()
 
     total_frames = len(tracks["players"])
@@ -1070,15 +1127,29 @@ def process_team_assignment_and_ball_tracking(
                     # Update field keypoints for current frame
                     goal_detector.update_keypoints(current_frame)
 
-                    # Detect goals using enhanced system
+                    # Get enhanced ball information from tracks
+                    ball_info = tracks["ball"][frame_num].get(1, {})
+                    ball_confidence = ball_info.get("confidence")
+                    ball_source = ball_info.get("source")
+
+                    # Detect goals using enhanced system with ball detection quality
                     goal_event = goal_detector.detect_goal(
-                        ball_position, assigned_player, current_team, frame_num
+                        ball_position,
+                        assigned_player,
+                        current_team,
+                        frame_num,
+                        ball_confidence=ball_confidence,
+                        ball_source=ball_source,
                     )
 
                     # Also use the old system for comparison (optional)
                     pass_counter.detect_goal(
                         ball_position, assigned_player, current_team, frame_num
                     )
+
+                    # Scoreboard analysis (if enabled)
+                    if scoreboard_analyzer:
+                        scoreboard_analyzer.analyze_frame(current_frame, frame_num)
 
             # Detect tackles and interceptions
             tackle_counter.detect_tackles_and_interceptions(
@@ -1120,7 +1191,7 @@ def process_team_assignment_and_ball_tracking(
 
     # Calculate final goal statistics using priority system
     final_team_goals, final_player_goals = calculate_final_goal_stats(
-        pass_counter, enhanced_goal_stats, manual_goals
+        pass_counter, enhanced_goal_stats, manual_goals, scoreboard_analyzer
     )
 
     # Update goal detector with final counts for consistency
@@ -1135,6 +1206,7 @@ def process_team_assignment_and_ball_tracking(
         final_team_goals,
         final_player_goals,
         tackle_counter,
+        scoreboard_analyzer=scoreboard_analyzer,
         uploader=uploader,
         bucket_name=spaces_bucket,
         upload_folder_prefix=spaces_folder_prefix,
@@ -1161,8 +1233,13 @@ def generate_output_video_memory_efficient(
 
     print(f"🎬 Generating output video in batches of {batch_size} frames...")
 
-    # Initialize tracker for drawing
-    tracker = Tracker("data/models/best_detect.pt", enable_jersey_detection=True)
+    # Initialize tracker for drawing with enhanced ball detection
+    tracker = Tracker(
+        "data/models/best_detect.pt",
+        enable_jersey_detection=True,
+        ball_model_path="data/models/best_ball.pt",
+        enable_enhanced_ball_detection=True,
+    )
 
     # Initialize other components if needed
     camera_movement_estimator = None
@@ -1179,15 +1256,15 @@ def generate_output_video_memory_efficient(
     if enable_speed_distance:
         speed_and_distance_estimator = SpeedAndDistance_Estimator()
 
-    # Initialize pass counter for drawing
-    pass_counter = PassCounter()
-
     # Setup video writer
     cap = cv2.VideoCapture(input_video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
+
+    # Initialize pass counter for drawing with video dimensions
+    pass_counter = PassCounter(video_width=width, video_height=height)
 
     fourcc = cv2.VideoWriter_fourcc(*"XVID")
     out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
@@ -1401,6 +1478,11 @@ if __name__ == "__main__":
         help="Enable speed and distance estimation (disabled by default for memory optimization)",
     )
     parser.add_argument(
+        "--enable-scoreboard-detection",
+        action="store_true",
+        help="Enable scoreboard detection and score extraction (experimental feature)",
+    )
+    parser.add_argument(
         "--memory-efficient",
         action="store_true",
         help="Use memory-efficient processing for large videos (recommended for videos >30 minutes)",
@@ -1530,6 +1612,7 @@ if __name__ == "__main__":
         goals_config=args.goals_config,
         enable_camera_movement=args.enable_camera_movement,
         enable_speed_distance=args.enable_speed_distance,
+        enable_scoreboard_detection=args.enable_scoreboard_detection,
         memory_efficient=args.memory_efficient,
         batch_size=args.batch_size,
         memory_limit=args.memory_limit,

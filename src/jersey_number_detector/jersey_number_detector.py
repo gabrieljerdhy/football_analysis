@@ -85,6 +85,13 @@ class JerseyNumberDetector:
             "invalid_range": 0,
             "invalid_format": 0,
             "filtered_multi_digit": 0,
+            "exceeds_100": 0,  # Track numbers >100 specifically
+            "high_number_rejected": 0,  # Track 90-99 numbers rejected
+            "ocr_artifacts_detected": 0,  # Track OCR artifact rejections
+            "suspicious_sequences": 0,  # Track suspicious sequence rejections
+            "context_validation_failed": 0,  # Track context validation failures
+            "uncommon_numbers_rejected": 0,  # Track uncommon numbers rejected
+            "mixed_alphanumeric_rejected": 0,  # Track mixed alphanumeric rejections
         }
 
     def preprocess_jersey_region(
@@ -154,29 +161,101 @@ class JerseyNumberDetector:
         else:
             gray = jersey_region
 
-        # Enhanced preprocessing pipeline
-        # 1. Gaussian blur to reduce noise before enhancement
-        blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+        # Enhanced preprocessing pipeline optimized for jersey number OCR
+        # 1. Initial noise reduction with edge-preserving filter
+        denoised = cv2.bilateralFilter(gray, 9, 75, 75)
 
-        # 2. Adaptive contrast enhancement
-        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-        enhanced = clahe.apply(blurred)
+        # 2. Adaptive histogram equalization for better contrast
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(denoised)
 
-        # 3. Morphological operations to clean up text regions
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-        morphed = cv2.morphologyEx(enhanced, cv2.MORPH_CLOSE, kernel)
+        # 3. Gaussian blur to smooth out minor artifacts
+        blurred = cv2.GaussianBlur(enhanced, (3, 3), 0)
 
-        # 4. Bilateral filter for edge-preserving smoothing
-        denoised = cv2.bilateralFilter(morphed, 7, 50, 50)
+        # 4. Morphological operations to clean up text regions
+        # Use different kernels for different operations
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 
-        # 5. Unsharp masking for better text clarity
-        gaussian = cv2.GaussianBlur(denoised, (0, 0), 1.5)
-        sharpened = cv2.addWeighted(denoised, 1.5, gaussian, -0.5, 0)
+        # Close small gaps in text
+        morphed = cv2.morphologyEx(blurred, cv2.MORPH_CLOSE, kernel_close)
+        # Remove small noise
+        morphed = cv2.morphologyEx(morphed, cv2.MORPH_OPEN, kernel_open)
 
-        # 6. Final contrast adjustment
-        sharpened = cv2.convertScaleAbs(sharpened, alpha=1.2, beta=10)
+        # 5. Enhanced unsharp masking for better text clarity
+        gaussian = cv2.GaussianBlur(morphed, (0, 0), 2.0)
+        sharpened = cv2.addWeighted(morphed, 1.8, gaussian, -0.8, 0)
 
-        return sharpened
+        # 6. Adaptive thresholding to improve text/background separation
+        # This helps OCR distinguish text more clearly
+        adaptive_thresh = cv2.adaptiveThreshold(
+            sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+        )
+
+        # 7. Final contrast and brightness adjustment
+        final = cv2.convertScaleAbs(adaptive_thresh, alpha=1.1, beta=5)
+
+        # 8. Optional: Apply additional morphological cleaning for very noisy images
+        if self._is_noisy_image(final):
+            final = self._apply_noise_reduction(final)
+
+        return final
+
+    def _is_noisy_image(self, image: np.ndarray) -> bool:
+        """
+        Detect if an image is particularly noisy and needs additional processing.
+
+        Args:
+            image: Preprocessed grayscale image
+
+        Returns:
+            True if the image appears noisy
+        """
+        # Calculate image statistics to detect noise
+        # High standard deviation often indicates noise
+        std_dev = np.std(image)
+
+        # Count the number of small connected components (potential noise)
+        # Find contours
+        contours, _ = cv2.findContours(
+            image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        # Count very small contours (likely noise)
+        small_contours = sum(1 for contour in contours if cv2.contourArea(contour) < 10)
+
+        # Image is considered noisy if it has high std dev and many small contours
+        is_noisy = std_dev > 60 and small_contours > 20
+
+        if is_noisy:
+            logger.debug(
+                f"Noisy image detected: std_dev={std_dev:.1f}, small_contours={small_contours}"
+            )
+
+        return is_noisy
+
+    def _apply_noise_reduction(self, image: np.ndarray) -> np.ndarray:
+        """
+        Apply additional noise reduction for very noisy images.
+
+        Args:
+            image: Noisy preprocessed image
+
+        Returns:
+            Cleaned image
+        """
+        # Apply median filter to remove salt-and-pepper noise
+        median_filtered = cv2.medianBlur(image, 3)
+
+        # Apply morphological opening to remove small noise
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        opened = cv2.morphologyEx(median_filtered, cv2.MORPH_OPEN, kernel)
+
+        # Apply morphological closing to fill small gaps
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel_close)
+
+        return closed
 
     def extract_jersey_number(
         self, preprocessed_image: np.ndarray
@@ -244,43 +323,71 @@ class JerseyNumberDetector:
         """
         valid_numbers = []
 
-        # Clean the text - remove common OCR artifacts
-        cleaned_text = re.sub(r"[^\d\s]", "", text)  # Keep only digits and spaces
+        # Enhanced text cleaning - remove common OCR artifacts more intelligently
+        cleaned_text = self._clean_ocr_text(text)
+
+        # First, check if the entire cleaned text is a 3+ digit number - if so, reject it entirely
+        if re.match(r"^\d{3,}$", cleaned_text.strip()):
+            # This is a long number sequence - don't extract anything from it
+            logger.debug(f"Rejecting long number sequence: '{cleaned_text}'")
+            return valid_numbers
 
         # Multiple regex patterns to catch different number formats
         patterns = [
             r"\b(\d{1,2})\b",  # Standalone 1-2 digit numbers
             r"^(\d{1,2})$",  # Entire string is 1-2 digits
             r"(\d{1,2})(?=\s|$)",  # 1-2 digits followed by space or end
+            r"(?<=\s)(\d{1,2})(?=\s)",  # 1-2 digits surrounded by spaces
         ]
 
         found_numbers = set()  # Use set to avoid duplicates
 
-        for pattern in patterns:
-            matches = re.findall(pattern, cleaned_text)
-            for match in matches:
-                found_numbers.add(match)
-
-        # Also try to extract from longer digit sequences
-        long_sequences = re.findall(r"\d{3,}", cleaned_text)
-        for seq in long_sequences:
-            # Try to extract valid 1-2 digit numbers from longer sequences
-            extracted = self._extract_from_long_sequence(seq)
-            found_numbers.update(extracted)
-            if extracted:
-                self.validation_stats["filtered_multi_digit"] += 1
+        # Only extract numbers if the text doesn't contain long digit sequences
+        if not re.search(r"\d{3,}", cleaned_text):
+            # Safe to extract - no long sequences present
+            for pattern in patterns:
+                matches = re.findall(pattern, cleaned_text)
+                for match in matches:
+                    found_numbers.add(match)
+        else:
+            # Text contains long sequences - be very selective
+            # Only extract if the number is clearly separated from long sequences
+            for pattern in patterns:
+                matches = re.findall(pattern, cleaned_text)
+                for match in matches:
+                    # Check if this number is part of a longer sequence
+                    if not self._is_part_of_long_sequence(match, cleaned_text):
+                        found_numbers.add(match)
+                    else:
+                        logger.debug(
+                            f"Rejecting {match} as part of long sequence in '{cleaned_text}'"
+                        )
+                        self.validation_stats["filtered_multi_digit"] += 1
 
         # Validate each found number
         for num_str in found_numbers:
             try:
                 number = int(num_str)
 
-                # Strict validation
-                if self._is_valid_jersey_number(number, text):
-                    valid_numbers.append((number, confidence))
-                else:
-                    # Log invalid detections for debugging
+                # Multi-stage validation
+                # Stage 1: Basic range and pattern validation
+                if not self._is_valid_jersey_number(number, text):
                     self._log_invalid_detection(number, text, "range_validation")
+                    continue
+
+                # Stage 2: Context-based validation
+                if not self._validate_number_context(number, text, confidence):
+                    self._log_invalid_detection(number, text, "context_validation")
+                    continue
+
+                # Stage 3: Mixed alphanumeric validation
+                if self._is_mixed_alphanumeric_context(text):
+                    self.validation_stats["mixed_alphanumeric_rejected"] += 1
+                    self._log_invalid_detection(number, text, "mixed_alphanumeric")
+                    continue
+
+                # Number passed all validation stages
+                valid_numbers.append((number, confidence))
 
             except ValueError:
                 self.validation_stats["invalid_format"] += 1
@@ -318,9 +425,34 @@ class JerseyNumberDetector:
 
         return valid_extractions
 
+    def _is_part_of_long_sequence(self, number_str: str, text: str) -> bool:
+        """
+        Check if a detected number is part of a longer digit sequence.
+
+        Args:
+            number_str: The detected number as string
+            text: The full text context
+
+        Returns:
+            True if the number is part of a longer sequence
+        """
+        # Look for the number within longer digit sequences
+        # Find all positions where this number appears
+        for match in re.finditer(re.escape(number_str), text):
+            start, end = match.span()
+
+            # Check if there are digits immediately before or after
+            has_digit_before = start > 0 and text[start - 1].isdigit()
+            has_digit_after = end < len(text) and text[end].isdigit()
+
+            if has_digit_before or has_digit_after:
+                return True
+
+        return False
+
     def _is_valid_jersey_number(self, number: int, original_text: str) -> bool:
         """
-        Comprehensive validation for jersey numbers.
+        Comprehensive validation for jersey numbers with enhanced >100 protection.
 
         Args:
             number: Detected number
@@ -329,13 +461,37 @@ class JerseyNumberDetector:
         Returns:
             True if number is valid, False otherwise
         """
-        # Range validation
+        # Primary range validation - STRICT enforcement against >100
         if not (self.valid_number_range[0] <= number <= self.valid_number_range[1]):
             self.validation_stats["invalid_range"] += 1
+            # Log specific cases of numbers >100 for analysis
+            if number > 100:
+                logger.warning(
+                    f"Rejected number >100: {number} from text '{original_text}'"
+                )
+                self.validation_stats["exceeds_100"] += 1
+                self._log_invalid_detection(number, original_text, "exceeds_100")
             return False
 
-        # Additional validation rules
-        # Rule 1: Reject numbers that are clearly part of longer sequences in suspicious contexts
+        # Enhanced validation rules for edge cases
+        # Rule 1: Strict validation for numbers close to 100
+        if number >= 90:
+            # Numbers 90-99 need extra scrutiny as they're close to invalid range
+            if self._validate_high_number(number, original_text):
+                logger.debug(
+                    f"High number {number} validated in context '{original_text}'"
+                )
+            else:
+                logger.debug(
+                    f"High number {number} rejected in context '{original_text}'"
+                )
+                self.validation_stats["high_number_rejected"] += 1
+                self._log_invalid_detection(
+                    number, original_text, "high_number_suspicious"
+                )
+                return False
+
+        # Rule 2: Reject numbers that are clearly part of longer sequences in suspicious contexts
         if len(original_text.strip()) > 3 and str(number) in original_text:
             # Check if this number appears as part of a longer sequence
             pattern = rf"\d*{number}\d+"
@@ -345,12 +501,366 @@ class JerseyNumberDetector:
                     logger.debug(
                         f"Suspicious number {number} in context '{original_text}'"
                     )
+                    self.validation_stats["suspicious_sequences"] += 1
+                    self._log_invalid_detection(
+                        number, original_text, "suspicious_sequence"
+                    )
                     return False
 
-        # Rule 2: Common jersey number validation (optional - can be enabled if team rosters available)
+        # Rule 3: OCR artifact detection - look for patterns that suggest misreads
+        if self._detect_ocr_artifacts(number, original_text):
+            logger.debug(
+                f"OCR artifact detected for number {number} in '{original_text}'"
+            )
+            self.validation_stats["ocr_artifacts_detected"] += 1
+            self._log_invalid_detection(number, original_text, "ocr_artifact")
+            return False
+
+        # Rule 4: Detect potential misreads of 3-digit numbers (like "100" read as "10")
+        if self._is_likely_misread_of_invalid_number(number, original_text):
+            logger.debug(
+                f"Potential misread of invalid number: {number} from '{original_text}'"
+            )
+            self.validation_stats["ocr_artifacts_detected"] += 1
+            self._log_invalid_detection(number, original_text, "misread_invalid")
+            return False
+
+        # Rule 5: Common jersey number validation (optional - can be enabled if team rosters available)
         # For now, just ensure it's in the valid range
 
         return True
+
+    def _validate_high_number(self, number: int, original_text: str) -> bool:
+        """
+        Enhanced validation for numbers 90-99 to prevent false positives near the 100 boundary.
+
+        Args:
+            number: The detected number (90-99)
+            original_text: Original OCR text for context analysis
+
+        Returns:
+            True if the high number is likely valid, False otherwise
+        """
+        # Check for patterns that suggest this might be a misread of a 3-digit number
+        cleaned_text = original_text.replace(" ", "").replace("-", "")
+
+        # Pattern 1: Look for 3+ digit sequences that contain this number
+        three_digit_pattern = rf"\d*{number}\d+"
+        if re.search(three_digit_pattern, cleaned_text):
+            # This number appears in a longer sequence - be very cautious
+            logger.debug(
+                f"High number {number} found in longer sequence: '{cleaned_text}'"
+            )
+            return False
+
+        # Pattern 2: Check for common OCR misreads that could create high numbers
+        # e.g., "100" misread as "10O" then extracted as "10"
+        if len(cleaned_text) >= 3:
+            # Look for patterns like "10O", "1OO", etc.
+            suspicious_patterns = [
+                r"10[O0]",  # 100 misread with O
+                r"1[O0]0",  # 100 with middle O
+                r"[O0]0\d",  # Leading O followed by digits
+            ]
+
+            for pattern in suspicious_patterns:
+                if re.search(pattern, cleaned_text, re.IGNORECASE):
+                    logger.debug(
+                        f"Suspicious OCR pattern detected: '{cleaned_text}' for number {number}"
+                    )
+                    return False
+
+        # Pattern 3: If the original text is much longer than the number, be cautious
+        if len(cleaned_text) > len(str(number)) + 2:
+            # Long text with a high number is suspicious
+            logger.debug(
+                f"Long text '{cleaned_text}' with high number {number} - suspicious"
+            )
+            return False
+
+        return True
+
+    def _detect_ocr_artifacts(self, number: int, original_text: str) -> bool:
+        """
+        Detect common OCR artifacts that might lead to invalid number detection.
+
+        Args:
+            number: The detected number
+            original_text: Original OCR text
+
+        Returns:
+            True if OCR artifacts are detected (number should be rejected)
+        """
+        cleaned_text = original_text.replace(" ", "").upper()
+
+        # Common OCR misreads that could create false numbers
+        ocr_artifacts = [
+            # Letters that look like numbers
+            ("O", "0"),  # O misread as 0
+            ("I", "1"),  # I misread as 1
+            ("L", "1"),  # L misread as 1
+            ("S", "5"),  # S misread as 5
+            ("G", "6"),  # G misread as 6
+            ("B", "8"),  # B misread as 8
+            ("Z", "2"),  # Z misread as 2
+        ]
+
+        # Check if the text contains suspicious letter-number combinations
+        for letter, digit in ocr_artifacts:
+            if letter in cleaned_text and digit in str(number):
+                # Found a potential OCR misread
+                logger.debug(
+                    f"Potential OCR artifact: '{letter}' -> '{digit}' in text '{original_text}'"
+                )
+
+                # Be more strict for higher numbers as they're more likely to be artifacts
+                if number > 70:
+                    return True
+
+        # Check for mixed alphanumeric patterns that suggest OCR confusion
+        if re.search(r"[A-Z]\d|\d[A-Z]", cleaned_text):
+            logger.debug(f"Mixed alphanumeric pattern detected: '{cleaned_text}'")
+            if number > 50:  # Higher numbers with mixed patterns are suspicious
+                return True
+
+        return False
+
+    def _clean_ocr_text(self, text: str) -> str:
+        """
+        Enhanced OCR text cleaning to improve number extraction accuracy.
+
+        Args:
+            text: Raw OCR text
+
+        Returns:
+            Cleaned text with common OCR artifacts corrected
+        """
+        cleaned = text.upper().strip()
+
+        # Common OCR corrections - fix obvious letter-to-number misreads
+        ocr_corrections = {
+            "O": "0",  # O -> 0
+            "I": "1",  # I -> 1
+            "L": "1",  # L -> 1
+            "S": "5",  # S -> 5 (sometimes)
+            "G": "6",  # G -> 6 (sometimes)
+            "B": "8",  # B -> 8 (sometimes)
+            "Z": "2",  # Z -> 2 (sometimes)
+        }
+
+        # Apply corrections only if the result would be a valid jersey number
+        # But be careful not to create false positives from obvious artifacts
+        for letter, digit in ocr_corrections.items():
+            if letter in cleaned:
+                # Check if this looks like an OCR artifact pattern
+                if self._is_likely_ocr_artifact_pattern(cleaned, letter, digit):
+                    # Don't apply correction for obvious artifacts like "O1", "1O0", etc.
+                    continue
+
+                # Try the correction and see if it results in a valid number
+                test_text = cleaned.replace(letter, digit)
+                # Only apply if the correction creates a cleaner numeric pattern
+                if re.search(r"\b\d{1,2}\b", test_text) and not re.search(
+                    r"\d{3,}", test_text
+                ):
+                    cleaned = test_text
+
+        # Remove common punctuation that might interfere
+        cleaned = re.sub(r"[.,;:!?]", "", cleaned)
+
+        # Remove extra whitespace and collapse multiple spaces
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+        # Final pass - keep only digits and spaces
+        cleaned = re.sub(r"[^\d\s]", "", cleaned)
+
+        # For simple cases with just digits and spaces, remove spaces if it creates a valid 1-2 digit number
+        if re.match(r"^\d(\s\d)*$", cleaned):  # Pattern like "3 5" or "1 2 3"
+            no_spaces = cleaned.replace(" ", "")
+            if len(no_spaces) <= 2 and no_spaces.isdigit():
+                cleaned = no_spaces
+
+        return cleaned
+
+    def _is_likely_ocr_artifact_pattern(
+        self, text: str, letter: str, digit: str
+    ) -> bool:
+        """
+        Check if a letter-to-digit correction would create an obvious OCR artifact.
+
+        Args:
+            text: The text containing the letter
+            letter: The letter to be corrected
+            digit: The digit it would become
+
+        Returns:
+            True if this looks like an OCR artifact that shouldn't be corrected
+        """
+        # Patterns that are likely OCR artifacts and should not be corrected
+        # Be more selective - only prevent corrections for obvious artifacts
+
+        # Special case: Only specific patterns are suspicious artifacts
+        # "O1" is suspicious (O followed by 1), but "I5" -> "15" is a valid correction
+        if re.match(rf"^{letter}1$", text.strip()) and letter in ["O", "I"]:
+            # "O1" or "I1" are suspicious artifacts - don't correct these
+            return True
+
+        # Other suspicious patterns
+        artifact_patterns = [
+            rf"^{letter}{letter}$",  # e.g., "OO", "II" - double letters
+            rf"^\d{letter}{letter}$",  # e.g., "1OO", "5II" - digit + double letters
+            rf"^{letter}{letter}\d$",  # e.g., "OO1", "II5" - double letters + digit
+        ]
+
+        for pattern in artifact_patterns:
+            if re.match(pattern, text.strip()):
+                return True
+
+        return False
+
+    def _is_likely_misread_of_invalid_number(
+        self, number: int, original_text: str
+    ) -> bool:
+        """
+        Detect if a valid number might be a misread of an invalid 3-digit number.
+
+        Args:
+            number: The detected valid number
+            original_text: Original OCR text
+
+        Returns:
+            True if this might be a misread of an invalid number like 100+
+        """
+        # Look for patterns that suggest the original was a 3-digit number
+        cleaned_text = original_text.replace(" ", "").upper()
+
+        # Pattern 1: If we detect "10" but the original text suggests "100"
+        if number == 10:
+            # Look for patterns that suggest "100" was misread as "10"
+            # Include common OCR misreads of "100"
+            suspicious_patterns = [
+                "100",
+                "10O",
+                "1OO",
+                "1O0",
+                "10C",
+                "1CC",
+                "IOO",
+                "I00",
+            ]
+            if any(pattern in cleaned_text for pattern in suspicious_patterns):
+                return True
+
+        # Pattern 2: If we detect a 2-digit number but text suggests 3+ digits
+        if 10 <= number <= 99:
+            # Check if the original text is longer and might contain 3+ digit patterns
+            if len(cleaned_text) >= 3:
+                # Look for patterns where our number might be part of a larger invalid number
+                number_str = str(number)
+                # Check if our number appears at the start of what might be a 3-digit sequence
+                if re.search(rf"^{number_str}[O0]", cleaned_text):
+                    return True
+
+        return False
+
+    def _is_mixed_alphanumeric_context(self, text: str) -> bool:
+        """
+        Check if the text contains mixed alphanumeric content that suggests the number
+        is not a standalone jersey number.
+
+        Args:
+            text: Original OCR text
+
+        Returns:
+            True if the text appears to be mixed alphanumeric (should reject numbers from it)
+        """
+        # Remove spaces and common punctuation for analysis
+        cleaned = re.sub(r"[\s.,;:!?-]", "", text.upper())
+
+        # Check for patterns that suggest mixed content
+        has_letters = bool(re.search(r"[A-Z]", cleaned))
+        has_digits = bool(re.search(r"\d", cleaned))
+
+        if has_letters and has_digits:
+            # This is mixed alphanumeric content
+            # Check if it's a simple correction case (like "1O" -> "10") vs complex mixed content
+            if len(cleaned) > 3:  # Longer mixed content is suspicious
+                return True
+
+            # Check for patterns like "12ABC34" where numbers are embedded in letters
+            if re.search(r"\d+[A-Z]+\d+", cleaned):
+                return True
+
+            # Check for patterns like "ABC12" or "12ABC" where it's clearly not just a jersey number
+            if re.search(r"[A-Z]{2,}\d+|\d+[A-Z]{2,}", cleaned):
+                return True
+
+        return False
+
+    def _validate_number_context(
+        self, number: int, original_text: str, confidence: float
+    ) -> bool:
+        """
+        Additional context-based validation for detected numbers.
+
+        Args:
+            number: Detected jersey number
+            original_text: Original OCR text
+            confidence: OCR confidence score
+
+        Returns:
+            True if number passes context validation
+        """
+        # Apply different confidence thresholds based on number characteristics
+
+        # Very common numbers (1-11) - be more lenient with confidence
+        if 1 <= number <= 11:
+            # These are very common jersey numbers, use standard threshold
+            min_confidence = self.confidence_threshold
+        # Higher numbers (80+) need higher confidence as they're less common
+        elif number > 80:
+            min_confidence = self.confidence_threshold + 0.1
+        # Uncommon numbers need even higher confidence
+        elif self._is_uncommon_jersey_number(number):
+            min_confidence = self.confidence_threshold + 0.15
+        else:
+            # Standard numbers (12-80) use standard threshold
+            min_confidence = self.confidence_threshold
+
+        if confidence < min_confidence:
+            logger.debug(
+                f"Number {number} rejected due to insufficient confidence: {confidence:.3f} < {min_confidence:.3f}"
+            )
+            if number > 80:
+                self.validation_stats["context_validation_failed"] += 1
+            elif self._is_uncommon_jersey_number(number):
+                self.validation_stats["uncommon_numbers_rejected"] += 1
+            else:
+                self.validation_stats["context_validation_failed"] += 1
+            return False
+
+        # Check for common jersey number patterns
+        if number == 0:
+            # Jersey number 0 is very rare in football
+            logger.debug(f"Jersey number 0 rejected - very uncommon in football")
+            self.validation_stats["context_validation_failed"] += 1
+            return False
+
+        return True
+
+    def _is_uncommon_jersey_number(self, number: int) -> bool:
+        """
+        Check if a jersey number is uncommon in football.
+
+        Args:
+            number: Jersey number to check
+
+        Returns:
+            True if the number is uncommon
+        """
+        # Very uncommon numbers in football (but still valid)
+        uncommon_numbers = {0, 13, 69, 96, 97, 98, 99}
+        return number in uncommon_numbers
 
     def _log_invalid_detection(self, number: Union[int, str], text: str, reason: str):
         """
@@ -613,6 +1123,13 @@ class JerseyNumberDetector:
             "invalid_range": 0,
             "invalid_format": 0,
             "filtered_multi_digit": 0,
+            "exceeds_100": 0,  # Track numbers >100 specifically
+            "high_number_rejected": 0,  # Track 90-99 numbers rejected
+            "ocr_artifacts_detected": 0,  # Track OCR artifact rejections
+            "suspicious_sequences": 0,  # Track suspicious sequence rejections
+            "context_validation_failed": 0,  # Track context validation failures
+            "uncommon_numbers_rejected": 0,  # Track uncommon numbers rejected
+            "mixed_alphanumeric_rejected": 0,  # Track mixed alphanumeric rejections
         }
 
         logger.info("Jersey number detector cache and statistics reset")

@@ -156,7 +156,7 @@ class TackleCounter:
         # If players are close enough, consider it a tackle
         return distance < self.tackle_distance_threshold
 
-    def export_tackle_stats_to_csv(self, output_path="tackle_stats.csv"):
+    def export_tackle_stats_to_csv(self, output_path="data/output/tackle_stats.csv"):
         """
         Export tackle and interception statistics to a CSV file.
 

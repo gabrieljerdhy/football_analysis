@@ -6,9 +6,13 @@ import numpy as np
 
 
 class PassCounter:
-    def __init__(self):
+    def __init__(self, video_width=None, video_height=None):
         """
         Initialize the PassCounter to track and count passes between players of the same team.
+
+        Args:
+            video_width (int): Width of the video in pixels
+            video_height (int): Height of the video in pixels
         """
         self.team_passes = {1: 0, 2: 0}  # Using numeric keys instead of strings
         self.player_passes = {}  # Track passes by player ID
@@ -21,14 +25,35 @@ class PassCounter:
         self.same_player_frames = 0
         self.min_frames_for_pass = 3  # Minimum frames to consider a stable possession
 
+        # Video dimensions for goal area calculation
+        self.video_width = video_width or 1920  # Default fallback
+        self.video_height = video_height or 1080  # Default fallback
+
         # Goal detection parameters
         self.goal_detected = False
         self.goal_cooldown = 0
-        self.goal_cooldown_frames = 30  # Don't detect another goal for this many frames
+        self.goal_cooldown_frames = 450  # FIXED: Increased to 450 frames (15 seconds at 30fps) to match enhanced detector
+
+        # Ball trajectory for basic validation
+        self.ball_trajectory = []
+        self.max_trajectory_length = (
+            10  # Keep last 10 positions for trajectory analysis
+        )
 
         # Store pass and goal counts per frame to show incremental progress
         self.pass_counts_per_frame = []
         self.goal_counts_per_frame = []
+
+    def set_video_dimensions(self, width, height):
+        """
+        Set the video dimensions for accurate goal area calculation.
+
+        Args:
+            width (int): Video width in pixels
+            height (int): Video height in pixels
+        """
+        self.video_width = width
+        self.video_height = height
 
     def count_passes(self, current_player_id, current_team, frame_num):
         """
@@ -194,7 +219,7 @@ class PassCounter:
 
         return frames
 
-    def export_player_passes_to_csv(self, output_path="player_passes.csv"):
+    def export_player_passes_to_csv(self, output_path="data/output/player_passes.csv"):
         """
         Export player pass data to a CSV file.
 
@@ -224,7 +249,7 @@ class PassCounter:
 
         print(f"Player pass data exported to {output_path}")
 
-    def export_player_stats_to_csv(self, output_path="player_stats.csv"):
+    def export_player_stats_to_csv(self, output_path="data/output/player_stats.csv"):
         """
         Export player statistics (passes and goals) to a CSV file.
 
@@ -323,52 +348,152 @@ class PassCounter:
             self.goal_cooldown -= 1
             return False
 
-        # Simple goal detection based on ball position
-        # Assuming goal posts are at specific x-coordinates
+        if not ball_position:
+            return False
+
         x, y = ball_position
 
-        # Left goal (Team 2 scores)
-        if x < 50 and 350 < y < 550 and not self.goal_detected:
-            self.team_goals[2] = self.team_goals.get(2, 0) + 1
-            self.goal_detected = True
-            self.goal_cooldown = self.goal_cooldown_frames
+        # Add ball position to trajectory for validation
+        self._update_ball_trajectory(ball_position)
 
-            # Record the player who scored
-            if player_id != -1 and team == 2:
-                if player_id not in self.player_goals:
-                    self.player_goals[player_id] = {"goals": 0, "team": team}
-                self.player_goals[player_id]["goals"] += 1
+        # FIXED: Much more realistic goal areas based on actual goal post dimensions
+        # Real football goal is approximately 7.32m wide × 2.44m high
+        # On a typical football field view, goals are much smaller than previous implementation
 
-            print(f"GOAL for Team 2 at frame {frame_num}! Total: {self.team_goals[2]}")
-            if player_id != -1 and team == 2:
-                print(f"Scored by Player {player_id}")
-            return True
+        # Calculate realistic goal dimensions (much smaller than before)
+        goal_width = int(
+            self.video_width * 0.008
+        )  # FIXED: 0.8% of width (was 4% - way too large!)
+        goal_height = int(
+            self.video_height * 0.12
+        )  # FIXED: 12% of height (was 35% - way too large!)
 
-        # Right goal (Team 1 scores)
-        elif x > 1230 and 350 < y < 550 and not self.goal_detected:
-            self.team_goals[1] = self.team_goals.get(1, 0) + 1
-            self.goal_detected = True
-            self.goal_cooldown = self.goal_cooldown_frames
+        # Position goals in typical locations for football broadcasts
+        goal_y_center = int(self.video_height * 0.5)  # Center vertically
+        goal_y_start = goal_y_center - goal_height // 2
+        goal_y_end = goal_y_center + goal_height // 2
 
-            # Record the player who scored
-            if player_id != -1 and team == 1:
-                if player_id not in self.player_goals:
-                    self.player_goals[player_id] = {"goals": 0, "team": team}
-                self.player_goals[player_id]["goals"] += 1
+        # Left goal (Team 2 scores) - very restrictive
+        left_goal_area = {
+            "x_min": 0,
+            "x_max": goal_width,
+            "y_min": goal_y_start,
+            "y_max": goal_y_end,
+        }
 
-            print(f"GOAL for Team 1 at frame {frame_num}! Total: {self.team_goals[1]}")
-            if player_id != -1 and team == 1:
-                print(f"Scored by Player {player_id}")
-            return True
+        # Right goal (Team 1 scores) - very restrictive
+        right_goal_area = {
+            "x_min": self.video_width - goal_width,
+            "x_max": self.video_width,
+            "y_min": goal_y_start,
+            "y_max": goal_y_end,
+        }
 
-        # Reset goal detection when ball is in middle of field
-        elif 400 < x < 880 and not self.goal_cooldown:
+        # Check for goal with trajectory validation
+        goal_detected = False
+
+        if (
+            left_goal_area["x_min"] <= x <= left_goal_area["x_max"]
+            and left_goal_area["y_min"] <= y <= left_goal_area["y_max"]
+            and not self.goal_detected
+        ):
+            # Validate trajectory - ball should be moving toward the goal
+            if self._validate_goal_trajectory("left"):
+                self.team_goals[2] = self.team_goals.get(2, 0) + 1
+                self.goal_detected = True
+                self.goal_cooldown = self.goal_cooldown_frames
+                goal_detected = True
+
+                # Record the player who scored
+                if player_id != -1 and team == 2:
+                    if player_id not in self.player_goals:
+                        self.player_goals[player_id] = {"goals": 0, "team": team}
+                    self.player_goals[player_id]["goals"] += 1
+
+                print(
+                    f"GOAL for Team 2 at frame {frame_num}! Total: {self.team_goals[2]}"
+                )
+                if player_id != -1 and team == 2:
+                    print(f"Scored by Player {player_id}")
+
+        elif (
+            right_goal_area["x_min"] <= x <= right_goal_area["x_max"]
+            and right_goal_area["y_min"] <= y <= right_goal_area["y_max"]
+            and not self.goal_detected
+        ):
+            # Validate trajectory - ball should be moving toward the goal
+            if self._validate_goal_trajectory("right"):
+                self.team_goals[1] = self.team_goals.get(1, 0) + 1
+                self.goal_detected = True
+                self.goal_cooldown = self.goal_cooldown_frames
+                goal_detected = True
+
+                # Record the player who scored
+                if player_id != -1 and team == 1:
+                    if player_id not in self.player_goals:
+                        self.player_goals[player_id] = {"goals": 0, "team": team}
+                    self.player_goals[player_id]["goals"] += 1
+
+                print(
+                    f"GOAL for Team 1 at frame {frame_num}! Total: {self.team_goals[1]}"
+                )
+                if player_id != -1 and team == 1:
+                    print(f"Scored by Player {player_id}")
+
+        # Reset goal detection when ball is in middle of field (expanded middle area)
+        middle_start = int(self.video_width * 0.25)  # 25% from left
+        middle_end = int(self.video_width * 0.75)  # 75% from left
+        if middle_start < x < middle_end and not self.goal_cooldown:
             self.goal_detected = False
 
         # Store current goal counts for this frame
         self.goal_counts_per_frame.append(
             {1: self.team_goals.get(1, 0), 2: self.team_goals.get(2, 0)}
         )
+
+        return goal_detected
+
+    def _update_ball_trajectory(self, ball_position):
+        """
+        Update ball trajectory for goal validation.
+
+        Args:
+            ball_position (tuple): (x, y) position of the ball
+        """
+        self.ball_trajectory.append(ball_position)
+
+        # Keep only the last N positions
+        if len(self.ball_trajectory) > self.max_trajectory_length:
+            self.ball_trajectory.pop(0)
+
+    def _validate_goal_trajectory(self, goal_side):
+        """
+        Validate if the ball trajectory indicates a valid goal.
+
+        Args:
+            goal_side (str): "left" or "right" goal
+
+        Returns:
+            bool: True if trajectory indicates a valid goal
+        """
+        if len(self.ball_trajectory) < 3:
+            return False  # Need at least 3 positions for trajectory analysis
+
+        # Get the last 3 positions
+        recent_positions = self.ball_trajectory[-3:]
+
+        # Calculate movement direction
+        start_x = recent_positions[0][0]
+        end_x = recent_positions[-1][0]
+        movement_x = end_x - start_x
+
+        # For left goal, ball should be moving left (negative x direction)
+        if goal_side == "left":
+            return movement_x < -5  # Ball must be moving left with minimum speed
+
+        # For right goal, ball should be moving right (positive x direction)
+        elif goal_side == "right":
+            return movement_x > 5  # Ball must be moving right with minimum speed
 
         return False
 

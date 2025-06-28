@@ -6,6 +6,7 @@ supervision
 matplotlib
 scikit-learn
 easyocr
+pytesseract
 pillow
 psutil
 boto3

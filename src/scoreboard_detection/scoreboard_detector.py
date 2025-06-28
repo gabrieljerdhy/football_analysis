@@ -25,11 +25,11 @@ class ScoreboardDetector:
 
     def __init__(
         self,
-        min_scoreboard_width: int = 200,
-        min_scoreboard_height: int = 50,
-        max_scoreboard_width: int = 800,
-        max_scoreboard_height: int = 200,
-        confidence_threshold: float = 0.6,
+        min_scoreboard_width: int = 100,  # Reduced minimum width
+        min_scoreboard_height: int = 30,  # Reduced minimum height
+        max_scoreboard_width: int = 1200,  # Increased maximum width
+        max_scoreboard_height: int = 300,  # Increased maximum height
+        confidence_threshold: float = 0.4,  # Lowered threshold for better detection
     ):
         """
         Initialize the scoreboard detector.
@@ -47,21 +47,32 @@ class ScoreboardDetector:
         self.max_height = max_scoreboard_height
         self.confidence_threshold = confidence_threshold
 
-        # Initialize MSER detector for text regions
-        self.mser = cv2.MSER_create(100, 14400, 5)  # min_area  # max_area  # delta
+        # Initialize multiple MSER detectors with different parameters for better coverage
+        self.mser_detectors = [
+            cv2.MSER_create(50, 10000, 3),  # More sensitive detector
+            cv2.MSER_create(100, 14400, 5),  # Original detector
+            cv2.MSER_create(200, 20000, 8),  # Less sensitive detector
+        ]
 
-        # Common scoreboard colors (BGR format)
+        # Expanded scoreboard colors (BGR format) with more variations
         self.scoreboard_colors = [
-            ([0, 0, 0], [50, 50, 50]),  # Black/dark backgrounds
-            ([200, 200, 200], [255, 255, 255]),  # White/light backgrounds
-            ([0, 50, 100], [50, 150, 255]),  # Red backgrounds
-            ([100, 100, 0], [255, 255, 100]),  # Yellow backgrounds
-            ([0, 100, 0], [100, 255, 100]),  # Green backgrounds
+            ([0, 0, 0], [80, 80, 80]),  # Black/dark backgrounds (expanded range)
+            (
+                [180, 180, 180],
+                [255, 255, 255],
+            ),  # White/light backgrounds (expanded range)
+            ([0, 30, 80], [80, 180, 255]),  # Red/orange backgrounds (expanded)
+            ([80, 80, 0], [255, 255, 120]),  # Yellow backgrounds (expanded)
+            ([0, 80, 0], [120, 255, 120]),  # Green backgrounds (expanded)
+            ([80, 0, 0], [255, 120, 120]),  # Blue backgrounds
+            ([40, 40, 40], [120, 120, 120]),  # Gray backgrounds
+            ([0, 0, 100], [100, 100, 255]),  # Red variations
+            ([100, 0, 0], [255, 100, 100]),  # Blue variations
         ]
 
         # Detection history for temporal consistency
         self.detection_history = []
-        self.max_history_length = 10
+        self.max_history_length = 15  # Increased history length
 
         self.logger = logging.getLogger(__name__)
 
@@ -80,19 +91,42 @@ class ScoreboardDetector:
 
         height, width = frame.shape[:2]
 
-        # Focus on upper portion of frame where scoreboards typically appear
-        upper_region = frame[: height // 3, :]
+        # Search in multiple regions where scoreboards might appear
+        search_regions = [
+            ("upper", frame[: height // 2, :]),  # Upper half (most common)
+            ("top_strip", frame[: height // 4, :]),  # Top quarter
+            ("center_strip", frame[height // 4 : 3 * height // 4, :]),  # Center strip
+            ("full", frame),  # Full frame as fallback
+        ]
 
-        # Detect using multiple methods
-        text_regions = self._detect_text_regions(upper_region)
-        contour_regions = self._detect_rectangular_regions(upper_region)
-        color_regions = self._detect_color_regions(upper_region)
+        all_text_regions = []
+        all_contour_regions = []
+        all_color_regions = []
+
+        for region_name, region in search_regions:
+            if region.size == 0:
+                continue
+
+            # Detect using multiple methods in each region
+            text_regions = self._detect_text_regions(region)
+            contour_regions = self._detect_rectangular_regions(region)
+            color_regions = self._detect_color_regions(region)
+
+            # Adjust coordinates back to full frame
+            if region_name == "center_strip":
+                offset_y = height // 4
+                for regions_list in [text_regions, contour_regions, color_regions]:
+                    for region_dict in regions_list:
+                        x, y, w, h = region_dict["bbox"]
+                        region_dict["bbox"] = (x, y + offset_y, w, h)
+
+            all_text_regions.extend(text_regions)
+            all_contour_regions.extend(contour_regions)
+            all_color_regions.extend(color_regions)
 
         # Combine and filter detections
-        all_regions = text_regions + contour_regions + color_regions
-        filtered_regions = self._filter_and_merge_regions(
-            all_regions, upper_region.shape[:2]
-        )
+        all_regions = all_text_regions + all_contour_regions + all_color_regions
+        filtered_regions = self._filter_and_merge_regions(all_regions, frame.shape[:2])
 
         # Add temporal consistency
         consistent_regions = self._apply_temporal_filtering(filtered_regions)
@@ -100,29 +134,54 @@ class ScoreboardDetector:
         return consistent_regions
 
     def _detect_text_regions(self, frame: np.ndarray) -> List[Dict]:
-        """Detect regions containing text using MSER."""
+        """Detect regions containing text using multiple MSER detectors."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Detect MSER regions
-        regions, _ = self.mser.detectRegions(gray)
+        # Apply histogram equalization for better contrast
+        equalized = cv2.equalizeHist(gray)
 
         text_regions = []
-        for region in regions:
-            # Get bounding box
-            x, y, w, h = cv2.boundingRect(region.reshape(-1, 1, 2))
+        all_regions = []
 
-            # Filter by size
-            if (
-                self.min_width <= w <= self.max_width
-                and self.min_height <= h <= self.max_height
-            ):
+        # Use multiple MSER detectors for better coverage
+        for mser_detector in self.mser_detectors:
+            try:
+                # Detect MSER regions on both original and equalized images
+                for img in [gray, equalized]:
+                    regions, _ = mser_detector.detectRegions(img)
+                    all_regions.extend(regions)
+            except Exception as e:
+                self.logger.debug(f"MSER detection failed: {e}")
+                continue
 
-                confidence = self._calculate_text_confidence(gray[y : y + h, x : x + w])
+        # Process all detected regions
+        for region in all_regions:
+            try:
+                # Get bounding box
+                x, y, w, h = cv2.boundingRect(region.reshape(-1, 1, 2))
 
-                if confidence > self.confidence_threshold:
-                    text_regions.append(
-                        {"bbox": (x, y, w, h), "confidence": confidence, "type": "text"}
-                    )
+                # Filter by size with more flexible constraints
+                if (
+                    self.min_width <= w <= self.max_width
+                    and self.min_height <= h <= self.max_height
+                    and w > h  # Scoreboards are typically wider than tall
+                    and 1.5 <= w / h <= 15  # Reasonable aspect ratio range
+                ):
+                    # Extract region for confidence calculation
+                    region_img = gray[y : y + h, x : x + w]
+                    confidence = self._calculate_text_confidence(region_img)
+
+                    if confidence > self.confidence_threshold:
+                        text_regions.append(
+                            {
+                                "bbox": (x, y, w, h),
+                                "confidence": confidence,
+                                "type": "text",
+                            }
+                        )
+            except Exception as e:
+                self.logger.debug(f"Region processing failed: {e}")
+                continue
 
         return text_regions
 
@@ -130,41 +189,63 @@ class ScoreboardDetector:
         """Detect rectangular regions that could be scoreboards."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Edge detection
-        edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-
-        # Find contours
-        contours, _ = cv2.findContours(
-            edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
+        # Apply Gaussian blur to reduce noise
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
         rectangular_regions = []
-        for contour in contours:
-            # Approximate contour to polygon
-            epsilon = 0.02 * cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, epsilon, True)
 
-            # Check if it's roughly rectangular (4 corners)
-            if len(approx) >= 4:
-                x, y, w, h = cv2.boundingRect(contour)
+        # Try multiple edge detection parameters
+        edge_params = [
+            (30, 100),  # Lower thresholds for subtle edges
+            (50, 150),  # Original parameters
+            (80, 200),  # Higher thresholds for strong edges
+        ]
 
-                # Filter by size and aspect ratio
-                if (
-                    self.min_width <= w <= self.max_width
-                    and self.min_height <= h <= self.max_height
-                    and 2 <= w / h <= 8
-                ):  # Typical scoreboard aspect ratio
+        for low_thresh, high_thresh in edge_params:
+            # Edge detection
+            edges = cv2.Canny(blurred, low_thresh, high_thresh, apertureSize=3)
 
-                    confidence = self._calculate_rectangle_confidence(contour, (w, h))
+            # Apply morphological operations to connect broken edges
+            kernel = np.ones((3, 3), np.uint8)
+            edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
 
-                    if confidence > self.confidence_threshold:
-                        rectangular_regions.append(
-                            {
-                                "bbox": (x, y, w, h),
-                                "confidence": confidence,
-                                "type": "rectangle",
-                            }
+            # Find contours
+            contours, _ = cv2.findContours(
+                edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+
+            for contour in contours:
+                # Skip very small contours
+                if cv2.contourArea(contour) < 500:
+                    continue
+
+                # Approximate contour to polygon
+                epsilon = 0.02 * cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, epsilon, True)
+
+                # Check if it's roughly rectangular (4 corners) or has reasonable shape
+                if len(approx) >= 4:
+                    x, y, w, h = cv2.boundingRect(contour)
+
+                    # Filter by size and aspect ratio with more flexible constraints
+                    if (
+                        self.min_width <= w <= self.max_width
+                        and self.min_height <= h <= self.max_height
+                        and w > h  # Scoreboards are wider than tall
+                        and 1.5 <= w / h <= 12  # More flexible aspect ratio
+                    ):
+                        confidence = self._calculate_rectangle_confidence(
+                            contour, (w, h)
                         )
+
+                        if confidence > self.confidence_threshold:
+                            rectangular_regions.append(
+                                {
+                                    "bbox": (x, y, w, h),
+                                    "confidence": confidence,
+                                    "type": "rectangle",
+                                }
+                            )
 
         return rectangular_regions
 

@@ -14,6 +14,10 @@ from src.camera_movement_estimator import CameraMovementEstimator
 from src.goal_detection import FieldKeypointsDetector, GoalDetector
 from src.pass_counter.pass_counter import PassCounter
 from src.pass_counter.tackle_counter import TackleCounter
+from src.pass_counter.unified_statistics_manager import (
+    AnalysisConfiguration,
+    UnifiedStatisticsManager,
+)
 from src.player_ball_assigner import PlayerBallAssigner
 from src.scoreboard_detection import ScoreboardAnalyzer
 from src.speed_and_distance_estimator import SpeedAndDistance_Estimator
@@ -64,6 +68,8 @@ def main(
     spaces_region="nyc3",
     spaces_folder_prefix="football_analysis",
     upload_csv_only=False,
+    use_enhanced_stats=False,
+    enable_trajectory_analysis=False,
 ):
     """
     Process a football video to track players, detect passes, and analyze the game.
@@ -77,6 +83,9 @@ def main(
         goals_config (str, optional): Path to a CSV file with manual goal information
         enable_camera_movement (bool): Whether to enable camera movement estimation (disabled by default for memory optimization)
         enable_speed_distance (bool): Whether to enable speed and distance estimation (disabled by default for memory optimization)
+        enable_scoreboard_detection (bool): Whether to enable scoreboard detection and score extraction
+        use_enhanced_stats (bool): Whether to use enhanced statistics system with detailed player and team metrics
+        enable_trajectory_analysis (bool): Whether to enable trajectory analysis for players and ball movement patterns
     """
     # Create output directories if they don't exist
     os.makedirs("data/output", exist_ok=True)
@@ -360,6 +369,25 @@ def main(
     # Initialize tackle counter
     tackle_counter = TackleCounter()
 
+    # Initialize enhanced statistics manager if enabled
+    enhanced_stats_manager = None
+    if use_enhanced_stats:
+        print("✨ Initializing Enhanced Statistics Manager...")
+        config = AnalysisConfiguration(
+            frame_rate=24.0,  # Default frame rate, could be extracted from video
+            enable_enhanced_ball_tracking=True,
+            enable_trajectory_analysis=enable_trajectory_analysis,
+            enable_confidence_validation=True,
+            min_pass_confidence=0.4,
+            min_tackle_confidence=0.4,
+            min_possession_frames=5,
+            export_detailed_events=True,
+            export_player_stats=True,
+            export_team_stats=True,
+            export_quality_metrics=True,
+        )
+        enhanced_stats_manager = UnifiedStatisticsManager(config)
+
     player_assigner = PlayerBallAssigner()
     team_ball_control = []
 
@@ -435,6 +463,41 @@ def main(
 
     # Update goal detector with final counts for consistency
     goal_detector.set_final_goal_counts(final_team_goals, final_player_goals)
+
+    # Run enhanced statistics analysis if enabled
+    enhanced_analysis_results = None
+    if use_enhanced_stats and enhanced_stats_manager:
+        print("📊 Running Enhanced Statistics Analysis...")
+        try:
+            # Create output directory for enhanced stats
+            output_dir = Path(input_video_path).parent / "data" / "output"
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Run comprehensive analysis
+            enhanced_analysis_results = enhanced_stats_manager.analyze_match(
+                tracks, str(output_dir), save_results=True
+            )
+
+            # Export summary report
+            summary_path = output_dir / "enhanced_analysis_summary.txt"
+            enhanced_stats_manager.export_summary_report(str(summary_path))
+
+            print("✅ Enhanced Statistics Analysis Complete!")
+
+            # Print summary
+            summary = enhanced_stats_manager.get_analysis_summary()
+            if summary:
+                print(f"📈 Enhanced Analysis Summary:")
+                print(f"   • Total Events: {summary.get('total_events', 0)}")
+                print(f"   • Quality Score: {summary.get('quality_score', 0):.2f}")
+                if "performance_metrics" in summary:
+                    print(
+                        f"   • Processing Time: {summary['performance_metrics'].get('processing_time', 0):.1f}s"
+                    )
+
+        except Exception as e:
+            print(f"⚠️ Enhanced statistics analysis failed: {e}")
+            print("Continuing with legacy statistics...")
 
     # Initialize DigitalOcean Spaces uploader if requested
     uploader = None
@@ -1084,11 +1147,19 @@ def process_team_assignment_and_ball_tracking(
     total_frames = len(tracks["players"])
 
     # For very large videos, optimize goal detection by reducing frame reads
-    goal_detection_interval = 5 if total_frames > 50000 else 1
+    goal_detection_interval = (
+        30 if total_frames > 50000 else 5
+    )  # Increased interval for large videos
     if total_frames > 50000:
         print(
             f"⚡ Optimizing goal detection: checking every {goal_detection_interval} frames for large video"
         )
+
+    # Pre-open video capture for goal detection to avoid repeated open/close operations
+    goal_detection_cap = (
+        cv2.VideoCapture(input_video_path) if goal_detection_interval > 0 else None
+    )
+    start_time = time.time()
 
     for frame_num, player_track in enumerate(tracks["players"]):
         # Check for shutdown request
@@ -1116,12 +1187,14 @@ def process_team_assignment_and_ball_tracking(
             pass_counter.count_passes(assigned_player, current_team, frame_num)
 
             # Enhanced goal detection using field keypoints (optimized for large videos)
-            if ball_position and frame_num % goal_detection_interval == 0:
-                # Get current frame for goal detection (we need to read it again)
-                cap = cv2.VideoCapture(input_video_path)
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-                ret, current_frame = cap.read()
-                cap.release()
+            if (
+                ball_position
+                and frame_num % goal_detection_interval == 0
+                and goal_detection_cap
+            ):
+                # Use pre-opened video capture for efficiency
+                goal_detection_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                ret, current_frame = goal_detection_cap.read()
 
                 if ret:
                     # Update field keypoints for current frame
@@ -1142,25 +1215,45 @@ def process_team_assignment_and_ball_tracking(
                         ball_source=ball_source,
                     )
 
-                    # Also use the old system for comparison (optional)
-                    pass_counter.detect_goal(
-                        ball_position, assigned_player, current_team, frame_num
-                    )
+                    # For large videos, skip redundant goal detection to save processing time
+                    if total_frames <= 50000:
+                        # Also use the old system for comparison (optional, only for smaller videos)
+                        pass_counter.detect_goal(
+                            ball_position, assigned_player, current_team, frame_num
+                        )
 
-                    # Scoreboard analysis (if enabled)
+                    # Scoreboard analysis (if enabled, with reduced frequency for large videos)
                     if scoreboard_analyzer:
-                        scoreboard_analyzer.analyze_frame(current_frame, frame_num)
+                        # For large videos, analyze scoreboard less frequently
+                        scoreboard_interval = 60 if total_frames > 50000 else 30
+                        if frame_num % scoreboard_interval == 0:
+                            scoreboard_analyzer.analyze_frame(current_frame, frame_num)
 
-            # Detect tackles and interceptions
-            tackle_counter.detect_tackles_and_interceptions(
-                player_track, assigned_player, current_team, frame_num
-            )
+            # Detect tackles and interceptions (optimized frequency for large videos)
+            if total_frames > 50000:
+                # For large videos, check tackles every 3rd frame to reduce overhead
+                if frame_num % 3 == 0:
+                    tackle_counter.detect_tackles_and_interceptions(
+                        player_track, assigned_player, current_team, frame_num
+                    )
+            else:
+                tackle_counter.detect_tackles_and_interceptions(
+                    player_track, assigned_player, current_team, frame_num
+                )
         else:
             # No player has the ball, pass -1 to indicate this
             pass_counter.count_passes(-1, None, frame_num)
-            tackle_counter.detect_tackles_and_interceptions(
-                player_track, -1, None, frame_num
-            )
+
+            # Reduced frequency tackle detection when no ball possession
+            if total_frames > 50000:
+                if frame_num % 5 == 0:  # Even less frequent when no possession
+                    tackle_counter.detect_tackles_and_interceptions(
+                        player_track, -1, None, frame_num
+                    )
+            else:
+                tackle_counter.detect_tackles_and_interceptions(
+                    player_track, -1, None, frame_num
+                )
 
             # Still check for goals even if no player has the ball (optimized)
             if ball_position and frame_num % goal_detection_interval == 0:
@@ -1168,13 +1261,25 @@ def process_team_assignment_and_ball_tracking(
 
             team_ball_control.append(team_ball_control[-1] if team_ball_control else 1)
 
-        # Progress update for large videos
-        if total_frames > 50000 and frame_num % 10000 == 0:
+        # Progress update for large videos with performance metrics
+        progress_interval = 5000 if total_frames > 50000 else 1000
+        if frame_num % progress_interval == 0 and frame_num > 0:
             progress = (frame_num / total_frames) * 100
             elapsed_time = time.time() - start_time
-            print(
-                f"⚽ Ball tracking progress: {progress:.1f}% ({frame_num:,}/{total_frames:,} frames) - {elapsed_time:.1f}s elapsed"
+            frames_per_second = frame_num / elapsed_time if elapsed_time > 0 else 0
+            estimated_remaining = (
+                (total_frames - frame_num) / frames_per_second
+                if frames_per_second > 0
+                else 0
             )
+            print(
+                f"⚽ Ball tracking progress: {progress:.1f}% ({frame_num:,}/{total_frames:,} frames) - "
+                f"{elapsed_time:.1f}s elapsed, {frames_per_second:.1f} fps, ~{estimated_remaining/60:.1f}min remaining"
+            )
+
+    # Clean up video capture
+    if goal_detection_cap:
+        goal_detection_cap.release()
 
     # Handle shutdown request - save partial results
     if shutdown_requested:
@@ -1544,6 +1649,18 @@ if __name__ == "__main__":
         help="Only upload CSV files, not the output video (faster)",
     )
 
+    # Enhanced statistics and analysis arguments
+    parser.add_argument(
+        "--use-enhanced-stats",
+        action="store_true",
+        help="Use enhanced statistics system with detailed player and team metrics",
+    )
+    parser.add_argument(
+        "--enable-trajectory-analysis",
+        action="store_true",
+        help="Enable trajectory analysis for players and ball movement patterns",
+    )
+
     args = parser.parse_args()
 
     # Create goals template if requested
@@ -1623,4 +1740,6 @@ if __name__ == "__main__":
         spaces_region=args.spaces_region,
         spaces_folder_prefix=args.spaces_folder_prefix,
         upload_csv_only=args.upload_csv_only,
+        use_enhanced_stats=args.use_enhanced_stats,
+        enable_trajectory_analysis=args.enable_trajectory_analysis,
     )

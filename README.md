@@ -88,18 +88,21 @@ graph TD
 ## ✨ Key Features
 
 ### 🎯 Advanced Goal Detection
+
 - **Enhanced Trajectory Analysis**: Multi-factor validation using direction consistency, speed analysis, and trajectory smoothness
 - **Field Keypoint Integration**: Accurate goal area identification using field detection
 - **Confidence Scoring**: Each goal detection includes confidence metrics
 - **Manual Goal Override**: Support for manual goal configuration via CSV
 
 ### 🔢 Jersey Number Recognition
+
 - **OCR Integration**: EasyOCR for robust text detection in various lighting conditions
 - **Advanced Preprocessing**: Gaussian blur, CLAHE enhancement, morphological operations
 - **Multi-frame Consensus**: Temporal consistency across multiple frames
 - **Validation System**: Comprehensive range validation (1-99) with context awareness
 
 ### ⚽ SoccerNet Integration (NEW!)
+
 - **Enhanced Ball Detection**: Train YOLOv8 models on SoccerNet's ball action spotting dataset (12 action classes)
 - **Action-Aware Analysis**: Recognize ball actions like passes, shots, crosses in real-time
 - **Professional Annotations**: Leverage 550+ professional games with expert annotations
@@ -107,12 +110,14 @@ graph TD
 - **Action Recognition**: Classify 12 ball actions and 17 general game actions
 
 ### 💾 Memory-Efficient Processing
+
 - **Batch Processing**: Process videos in configurable chunks to avoid memory issues
 - **Automatic Optimization**: Dynamic batch size adjustment based on available memory
 - **Progress Monitoring**: Real-time memory usage and progress tracking
 - **Large Video Support**: Tested with 2+ hour videos without memory issues
 
 ### ☁️ Cloud Storage Integration
+
 - **DigitalOcean Spaces**: Automatic upload of CSV files and videos
 - **Flexible Configuration**: Environment variables, command-line, or .env file setup
 - **Organized Storage**: Structured folder organization in cloud buckets
@@ -127,8 +132,9 @@ graph TD
 pip install -r requirements.txt
 
 # Download required models (place in data/models/)
-# - best_detect.pt (YOLO player and ball detection model)
-# - best_keypoint.pt (Field keypoints detection model)
+# - best_player_detect.pt (YOLO player detection model)
+# - best_ball_latest.pt (Enhanced ball detection model)
+# - best_field_keypoint.pt (Field keypoints detection model)
 ```
 
 ### Basic Usage
@@ -183,6 +189,7 @@ python main.py --input data/input_videos/match.mp4 --goals-config goals.csv
 The system generates comprehensive analysis results:
 
 ### Video Output
+
 - **Annotated Video**: `data/output_videos/{video_name}_output.avi`
   - Player tracking with jersey numbers
   - Team identification with color coding
@@ -190,7 +197,9 @@ The system generates comprehensive analysis results:
   - Real-time statistics overlay
 
 ### CSV Statistics
+
 - **Team Statistics**: `data/output/{video_name}_team_stats.csv`
+
   - Passes, goals, tackles, interceptions per team
   - Ball possession percentages
   - Goal detection confidence scores
@@ -201,6 +210,7 @@ The system generates comprehensive analysis results:
   - Speed and distance data (if enabled)
 
 ### Cached Data
+
 - **Tracking Data**: `data/stubs/{video_name}_tracks.pkl`
 - **Camera Movement**: `data/stubs/{video_name}_camera_movement.pkl`
 
@@ -208,16 +218,17 @@ The system generates comprehensive analysis results:
 
 ### Memory Settings
 
-| System RAM | Recommended Settings |
-|------------|---------------------|
-| 4GB        | `--batch-size 20 --memory-limit 3.0` |
-| 8GB        | `--batch-size 50 --memory-limit 6.0` |
+| System RAM | Recommended Settings                   |
+| ---------- | -------------------------------------- |
+| 4GB        | `--batch-size 20 --memory-limit 3.0`   |
+| 8GB        | `--batch-size 50 --memory-limit 6.0`   |
 | 16GB       | `--batch-size 100 --memory-limit 12.0` |
 | 32GB+      | `--batch-size 200 --memory-limit 24.0` |
 
 ### Cloud Storage Setup
 
 Create a `.env` file:
+
 ```bash
 DO_SPACES_ACCESS_KEY_ID=your_access_key_id
 DO_SPACES_SECRET_ACCESS_KEY=your_secret_access_key
@@ -228,6 +239,7 @@ DO_SPACES_REGION=nyc3
 ## 🧪 Testing & Development
 
 ### Run Tests
+
 ```bash
 # Test jersey number detection
 python tests/test_jersey_detection.py
@@ -240,6 +252,7 @@ python tests/test_memory_optimization.py
 ```
 
 ### Performance Benchmarking
+
 ```bash
 # Simple benchmark
 python scripts/benchmark_analysis.py --input data/input_videos/test.mp4
@@ -251,44 +264,52 @@ python scripts/timed_analysis.py --input data/input_videos/test.mp4
 ## 📋 Command Reference
 
 ### Core Options
+
 - `--input, -i`: Input video file (required)
 - `--output, -o`: Output video file (optional)
 - `--memory-efficient`: Enable memory-efficient processing
 - `--check-video-info`: Check video requirements without processing
 
 ### Memory Options
+
 - `--batch-size`: Frames to process at once (default: 50)
 - `--memory-limit`: Memory limit in GB (default: 8.0)
 
 ### Feature Options
+
 - `--enable-camera-movement`: Enable camera movement estimation
 - `--enable-speed-distance`: Enable speed and distance calculation
 - `--goals-config`: Path to manual goals CSV file
 
 ### Storage Options
+
 - `--upload-to-spaces`: Upload results to DigitalOcean Spaces
 - `--upload-csv-only`: Upload only CSV files (skip video)
 - `--spaces-bucket`: Cloud storage bucket name
 
 ### Processing Options
+
 - `--no-stubs`: Don't use cached results
 - `--force-regenerate`: Force regeneration of all cached data
 
 ## 🔧 Technical Details
 
 ### AI Models Used
+
 - **YOLO v5**: Object detection for players, ball, and referees
 - **EasyOCR**: Jersey number recognition
 - **K-means Clustering**: Team color identification
 - **Optical Flow**: Camera movement estimation
 
 ### Performance Optimizations
+
 - **Batch Processing**: Configurable frame batching for memory efficiency
 - **Intelligent Caching**: Avoid redundant processing with stub files
 - **GPU Acceleration**: Automatic GPU detection for OCR and detection
 - **Memory Management**: Automatic cleanup and garbage collection
 
 ### Data Processing Pipeline
+
 1. **Video Ingestion**: Frame-by-frame or batch processing
 2. **Object Detection**: YOLO-based detection of players, ball, referees
 3. **Tracking**: Multi-object tracking across frames
@@ -300,6 +321,7 @@ python scripts/timed_analysis.py --input data/input_videos/test.mp4
 ## 🚨 Troubleshooting
 
 ### Memory Issues
+
 ```bash
 # Reduce batch size
 python main.py --input video.mp4 --memory-efficient --batch-size 10
@@ -309,6 +331,7 @@ python main.py --input video.mp4 --check-video-info
 ```
 
 ### Performance Issues
+
 ```bash
 # Use cached data for faster re-runs
 python main.py --input video.mp4 --memory-efficient
@@ -319,6 +342,7 @@ python main.py --input video.mp4 --memory-efficient
 ```
 
 ### Storage Issues
+
 ```bash
 # Test cloud connection
 python scripts/test_spaces_connection.py
@@ -330,13 +354,13 @@ python main.py --input video.mp4 --upload-to-spaces --upload-csv-only
 ## 📈 Performance Benchmarks
 
 | Video Length | Memory Usage | Processing Time | Accuracy |
-|-------------|--------------|-----------------|----------|
-| 5 minutes   | ~2GB         | 3-5 minutes     | 95%+     |
-| 30 minutes  | ~4GB         | 15-25 minutes   | 90%+     |
-| 90 minutes  | ~6GB         | 45-75 minutes   | 85%+     |
-| 2+ hours    | ~8GB         | 90-150 minutes  | 85%+     |
+| ------------ | ------------ | --------------- | -------- |
+| 5 minutes    | ~2GB         | 3-5 minutes     | 95%+     |
+| 30 minutes   | ~4GB         | 15-25 minutes   | 90%+     |
+| 90 minutes   | ~6GB         | 45-75 minutes   | 85%+     |
+| 2+ hours     | ~8GB         | 90-150 minutes  | 85%+     |
 
-*Performance varies based on video resolution, system specifications, and enabled features.*
+_Performance varies based on video resolution, system specifications, and enabled features._
 
 ## 🤝 Contributing
 
@@ -368,6 +392,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 📞 Support
 
 For issues and questions:
+
 - **SoccerNet Integration**: See [SoccerNet Integration Guide](docs/SOCCERNET_INTEGRATION.md)
 - **General Issues**: Check the troubleshooting section above
 - **Testing**: Run test scripts in the `tests/` directory

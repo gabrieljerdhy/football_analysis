@@ -895,10 +895,45 @@ class JerseyNumberDetector:
         Returns:
             Detected jersey number or None
         """
-        # Check cache first
+        # Check cache first - this is the most important optimization
         if track_id in self.player_jersey_cache:
             self.cache_hits += 1
             return self.player_jersey_cache[track_id]
+
+        # Quick check: if we already have enough history for this player,
+        # try to get consensus without new OCR
+        if (
+            track_id in self.player_jersey_history
+            and len(self.player_jersey_history[track_id]) >= self.consensus_frames
+        ):
+            consensus_number = self._get_consensus_number(track_id)
+            if consensus_number is not None:
+                self.player_jersey_cache[track_id] = consensus_number
+                logger.info(
+                    f"Jersey number {consensus_number} confirmed for player {track_id} (from history)"
+                )
+                return consensus_number
+
+        # Ultra-aggressive optimization: if we have ANY valid detection for this player
+        # and we've already confirmed many other players, use the first valid detection
+        if (
+            track_id in self.player_jersey_history
+            and len(self.player_jersey_history[track_id]) > 0
+            and len(self.player_jersey_cache) > 10
+        ):  # If we already have 10+ confirmed players
+
+            # Use the most confident detection we have
+            best_detection = max(
+                self.player_jersey_history[track_id], key=lambda x: x[1]
+            )
+            number, confidence = best_detection
+
+            if confidence > 0.5:  # Reasonable confidence threshold
+                self.player_jersey_cache[track_id] = number
+                logger.info(
+                    f"Jersey number {number} fast-confirmed for player {track_id} (confidence: {confidence:.3f})"
+                )
+                return number
 
         # Preprocess jersey region
         preprocessed = self.preprocess_jersey_region(frame, bbox)

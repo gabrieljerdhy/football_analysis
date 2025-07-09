@@ -59,7 +59,7 @@ def main(
     enable_speed_distance=False,
     enable_scoreboard_detection=False,
     memory_efficient=False,
-    batch_size=50,
+    batch_size=100,
     memory_limit=8.0,
     upload_to_spaces=False,
     spaces_access_key_id=None,
@@ -70,6 +70,7 @@ def main(
     upload_csv_only=False,
     use_enhanced_stats=False,
     enable_trajectory_analysis=False,
+    device=None,
 ):
     """
     Process a football video to track players, detect passes, and analyze the game.
@@ -86,7 +87,21 @@ def main(
         enable_scoreboard_detection (bool): Whether to enable scoreboard detection and score extraction
         use_enhanced_stats (bool): Whether to use enhanced statistics system with detailed player and team metrics
         enable_trajectory_analysis (bool): Whether to enable trajectory analysis for players and ball movement patterns
+        device (str | torch.device, optional): Device to run models on (auto, cpu, cuda, cuda:0, etc.)
     """
+    print("🚀 Starting Football Analysis Pipeline...")
+
+    # Configure device for GPU acceleration
+    from src.utils import (
+        configure_device_environment,
+        get_optimal_device,
+        print_device_info,
+    )
+
+    selected_device = get_optimal_device(device, verbose=True)
+    print_device_info(selected_device)
+    configure_device_environment(selected_device)
+
     # Create output directories if they don't exist
     os.makedirs("data/output", exist_ok=True)
     os.makedirs("data/output_videos", exist_ok=True)
@@ -201,6 +216,7 @@ def main(
                 uploader=uploader,
                 spaces_bucket=spaces_bucket,
                 spaces_folder_prefix=spaces_folder_prefix,
+                device=selected_device,
             )
         )
 
@@ -215,6 +231,7 @@ def main(
             enable_camera_movement=enable_camera_movement,
             enable_speed_distance=enable_speed_distance,
             batch_size=batch_size,
+            device=selected_device,
         )
 
         # Upload video to DigitalOcean Spaces if requested and uploader is available
@@ -247,15 +264,24 @@ def main(
 
     # Initialize Tracker with enhanced ball detection and jersey number detection
     tracker = Tracker(
-        "data/models/best_detect.pt",
+        "data/models/best_player_detect.pt",
         enable_jersey_detection=True,
-        ball_model_path="data/models/best_ball.pt",
+        ball_model_path="data/models/best_ball_latest.pt",
         enable_enhanced_ball_detection=True,
+        device=selected_device,
     )
 
     # Initialize Enhanced Goal Detection System
-    field_keypoints_detector = FieldKeypointsDetector("data/models/best_keypoint.pt")
+    field_keypoints_detector = FieldKeypointsDetector(
+        "data/models/best_field_keypoint.pt", device=selected_device
+    )
     goal_detector = GoalDetector(field_keypoints_detector)
+
+    # Initialize Enhanced Goal Detection System for better accuracy
+    from src.goal_detection.enhanced_goal_detector import EnhancedGoalDetector
+
+    enhanced_goal_detector = EnhancedGoalDetector(field_keypoints_detector)
+    print("✅ Enhanced goal detection system initialized for improved accuracy")
 
     # Configure optimization for better performance
     goal_detector.set_keypoint_optimization(
@@ -405,17 +431,18 @@ def main(
             # Count passes with improved accuracy, passing frame number
             pass_counter.count_passes(assigned_player, current_team, frame_num)
 
-            # Enhanced goal detection using field keypoints
+            # Enhanced goal detection using field keypoints and multiple methods
             if ball_position:
                 # Update field keypoints for current frame
                 goal_detector.update_keypoints(video_frames[frame_num])
+                enhanced_goal_detector.update_keypoints(video_frames[frame_num])
 
                 # Get enhanced ball information from tracks
                 ball_info = tracks["ball"][frame_num].get(1, {})
                 ball_confidence = ball_info.get("confidence")
                 ball_source = ball_info.get("source")
 
-                # Detect goals using enhanced system with ball detection quality
+                # Detect goals using original enhanced system
                 goal_event = goal_detector.detect_goal(
                     ball_position,
                     assigned_player,
@@ -425,7 +452,17 @@ def main(
                     ball_source=ball_source,
                 )
 
-                # Also use the old system for comparison (optional)
+                # Detect goals using new enhanced system for better accuracy
+                enhanced_goal_event = enhanced_goal_detector.detect_goal(
+                    ball_position,
+                    assigned_player,
+                    current_team,
+                    frame_num,
+                    ball_confidence=ball_confidence,
+                    ball_source=ball_source,
+                )
+
+                # Also use the regular system for comparison
                 pass_counter.detect_goal(
                     ball_position, assigned_player, current_team, frame_num
                 )
@@ -453,12 +490,19 @@ def main(
 
     team_ball_control = np.array(team_ball_control)
 
-    # Get enhanced goal statistics first
+    # Get enhanced goal statistics from both systems
     enhanced_goal_stats = goal_detector.get_goal_statistics()
+    improved_goal_stats = enhanced_goal_detector.get_goal_statistics()
 
-    # Calculate final goal statistics using priority system
-    final_team_goals, final_player_goals = calculate_final_goal_stats(
-        pass_counter, enhanced_goal_stats, manual_goals, scoreboard_analyzer
+    # Calculate final goal statistics using fusion approach for maximum accuracy
+    from src.utils.goal_utils import calculate_final_goal_stats_fusion
+
+    final_team_goals, final_player_goals = calculate_final_goal_stats_fusion(
+        pass_counter,
+        enhanced_goal_stats,
+        improved_goal_stats,
+        manual_goals,
+        scoreboard_analyzer,
     )
 
     # Update goal detector with final counts for consistency
@@ -683,6 +727,7 @@ def process_video_memory_efficient(
     uploader=None,
     spaces_bucket=None,
     spaces_folder_prefix="football_analysis",
+    device=None,
 ):
     """
     Memory-efficient video processing that processes frames in batches.
@@ -701,17 +746,26 @@ def process_video_memory_efficient(
 
     print("\n🔧 Initializing components...")
 
-    # Initialize Tracker with enhanced ball detection and jersey number detection
+    # Initialize Tracker with enhanced ball detection and optimized jersey detection
     tracker = Tracker(
-        "data/models/best_detect.pt",
-        enable_jersey_detection=True,
-        ball_model_path="data/models/best_ball.pt",
+        "data/models/best_player_detect.pt",
+        enable_jersey_detection=True,  # Re-enabled with optimizations
+        ball_model_path="data/models/best_ball_latest.pt",
         enable_enhanced_ball_detection=True,
+        device=device,
     )
 
     # Initialize Enhanced Goal Detection System
-    field_keypoints_detector = FieldKeypointsDetector("data/models/best_keypoint.pt")
+    field_keypoints_detector = FieldKeypointsDetector(
+        "data/models/best_field_keypoint.pt", device=device
+    )
     goal_detector = GoalDetector(field_keypoints_detector)
+
+    # Initialize Enhanced Goal Detection System for better accuracy
+    from src.goal_detection.enhanced_goal_detector import EnhancedGoalDetector
+
+    enhanced_goal_detector = EnhancedGoalDetector(field_keypoints_detector)
+    print("✅ Enhanced goal detection system initialized for improved accuracy")
 
     # Configure optimization for memory-efficient processing
     # Use larger intervals for very large videos to reduce computational load
@@ -724,13 +778,13 @@ def process_video_memory_efficient(
     scoreboard_analyzer = None
     if enable_scoreboard_detection:
         print("🎯 Initializing scoreboard detection system...")
-        # Use larger intervals for memory-efficient processing
-        scoreboard_interval = 60 if video_info.get("total_frames", 0) > 50000 else 30
         scoreboard_analyzer = ScoreboardAnalyzer(
-            detection_interval=scoreboard_interval,
+            detection_interval=30,  # Analyze every 30 frames for efficiency
             min_detection_confidence=0.6,
             min_extraction_confidence=0.6,
         )
+    else:
+        print("⚠️  Scoreboard detection disabled")
 
     # Load manual goals if provided
     manual_goals = load_manual_goals(goals_config)
@@ -809,6 +863,7 @@ def process_video_memory_efficient(
         uploader,
         spaces_bucket,
         spaces_folder_prefix,
+        enhanced_goal_detector,  # Use enhanced goal detector for better accuracy
     )
 
     return tracks, team_ball_control, camera_movement_per_frame
@@ -831,8 +886,8 @@ def process_tracking_in_batches(
                 f"🔄 Processing frames {frames_processed}-{frames_processed + len(batch_frames)}"
             )
 
-            # Process this batch
-            batch_tracks = tracker.get_object_tracks(
+            # Process this batch using optimized memory-efficient method
+            batch_tracks = tracker.get_object_tracks_memory_efficient(
                 batch_frames, read_from_stub=False, stub_path=None
             )
 
@@ -861,40 +916,125 @@ def process_tracking_in_batches(
 
 
 def add_jersey_numbers_in_batches(input_video_path, tracker, tracks, batch_size):
-    """Add jersey numbers to tracks in batches to save memory."""
+    """Add jersey numbers to tracks using optimized sampling and caching."""
+    import time
+
     from src.utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
 
-    print(f"🔢 Adding jersey numbers in batches of {batch_size} frames...")
+    print(f"🔢 Adding jersey numbers with optimized processing...")
 
-    frame_num = 0
+    if not tracker.enable_jersey_detection or tracker.jersey_detector is None:
+        # Add placeholder jersey numbers (track_id as jersey number)
+        for frame_num, player_track in enumerate(tracks["players"]):
+            for track_id, track_info in player_track.items():
+                track_info["jersey_number"] = track_id
+        print("✅ Jersey numbers added (using track IDs as placeholders)")
+        return
+
+    start_time = time.time()
+    total_frames = len(tracks["players"])
+
+    # Collect all unique player IDs first
+    all_player_ids = set()
+    for player_track in tracks["players"]:
+        all_player_ids.update(player_track.keys())
+
+    print(
+        f"🎯 Found {len(all_player_ids)} unique players across {total_frames:,} frames"
+    )
+
+    # Use ultra-aggressive sampling - only process every 150th frame initially
+    # This should be enough to detect jersey numbers for most players
+    sample_interval = max(150, total_frames // 30)  # Process at most 30 frames
+    processed_frames = 0
+    confirmed_players = 0
+    max_frames_to_process = min(30, total_frames // 100)  # Cap at 30 frames max
+
     with VideoFrameIterator(input_video_path, batch_size) as frame_iterator:
+        frame_num = 0
+
         for batch_frames in frame_iterator:
-            # Create a subset of tracks for this batch
-            batch_tracks = {"players": [], "referees": [], "ball": []}
-
+            # Only process sampled frames from this batch
             for i, frame in enumerate(batch_frames):
-                if frame_num + i < len(tracks["players"]):
-                    batch_tracks["players"].append(tracks["players"][frame_num + i])
-                    batch_tracks["referees"].append(tracks["referees"][frame_num + i])
-                    batch_tracks["ball"].append(tracks["ball"][frame_num + i])
+                current_frame_num = frame_num + i
 
-            # Add jersey numbers for this batch
-            tracker.add_jersey_numbers_to_tracks(
-                batch_tracks, batch_frames, frame_sampling=5
-            )
+                # Skip frames that aren't in our sample
+                if current_frame_num % sample_interval != 0:
+                    continue
 
-            # Update the main tracks with jersey numbers
-            for i, frame in enumerate(batch_frames):
-                if frame_num + i < len(tracks["players"]):
-                    tracks["players"][frame_num + i] = batch_tracks["players"][i]
+                if current_frame_num >= len(tracks["players"]):
+                    break
+
+                player_track = tracks["players"][current_frame_num]
+
+                # Process each player in this frame
+                for track_id, track_info in player_track.items():
+                    # Skip if we already have a confirmed jersey number for this player
+                    if track_id in tracker.jersey_detector.player_jersey_cache:
+                        continue
+
+                    bbox = track_info["bbox"]
+
+                    # Detect jersey number
+                    jersey_number = tracker.jersey_detector.detect_jersey_number(
+                        frame, bbox, track_id
+                    )
+
+                    # Count newly confirmed players
+                    if (
+                        jersey_number is not None
+                        and track_id not in tracker.jersey_detector.player_jersey_cache
+                    ):
+                        confirmed_players += 1
+
+                processed_frames += 1
+
+                # Early termination conditions
+                cache_coverage = len(tracker.jersey_detector.player_jersey_cache) / len(
+                    all_player_ids
+                )
+
+                # Stop if we've confirmed most players OR processed enough frames
+                if (
+                    cache_coverage > 0.5 and processed_frames > 5
+                ) or processed_frames >= max_frames_to_process:
+                    print(
+                        f"🎯 Early termination: {cache_coverage:.1%} players confirmed, {processed_frames} frames processed"
+                    )
+                    break
 
             frame_num += len(batch_frames)
             cleanup_memory()
 
-            if frame_num >= len(tracks["players"]):
+            if frame_num >= total_frames:
                 break
 
-    print(f"✅ Jersey numbers added for {frame_num} frames")
+            # Check if we should continue processing
+            cache_coverage = len(tracker.jersey_detector.player_jersey_cache) / len(
+                all_player_ids
+            )
+            if (
+                cache_coverage > 0.5 and processed_frames > 5
+            ) or processed_frames >= max_frames_to_process:
+                break
+
+    # Propagate detected jersey numbers to all frames
+    tracker._propagate_jersey_numbers(tracks)
+
+    # Print performance stats
+    elapsed_time = time.time() - start_time
+    stats = tracker.jersey_detector.get_detection_stats()
+
+    print(f"✅ Jersey numbers added for {total_frames:,} frames in {elapsed_time:.2f}s")
+    print(f"📊 Optimized jersey detection stats:")
+    print(
+        f"  Processed frames: {processed_frames:,} (sample rate: 1/{sample_interval})"
+    )
+    print(f"  OCR calls: {stats['ocr_calls']:,}")
+    print(f"  Cache hits: {stats['cache_hits']:,}")
+    print(f"  Cache hit rate: {stats['cache_hit_rate']:.2%}")
+    print(f"  Confirmed players: {stats['confirmed_players']}")
+    print(f"  Performance: {elapsed_time/total_frames*1000:.3f}ms per frame")
 
 
 def process_camera_movement_in_batches(
@@ -970,13 +1110,16 @@ def process_team_assignment_and_ball_tracking(
     uploader=None,
     spaces_bucket=None,
     spaces_folder_prefix="football_analysis",
+    improved_goal_detector=None,
 ):
     """Process team assignment and ball tracking in batches."""
+    import time
+
     import cv2
 
     from src.utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
 
-    # Team assignment - need to get a frame for color analysis
+    # Team assignment - optimized batch processing
     team_assigner = TeamAssigner()
 
     # Find first frame with player detections
@@ -986,23 +1129,44 @@ def process_team_assignment_and_ball_tracking(
             first_frame_with_players = i
             break
 
-    # Get the first frame to analyze team colors
+    # Get sample frames for color analysis (much more efficient)
+    sample_frames = []
+    sample_indices = []
+
+    # Sample every 100th frame or first 10 frames with players, whichever gives us more samples
+    for i in range(0, min(len(tracks["players"]), 1000), 100):
+        if tracks["players"][i]:  # If there are player detections
+            sample_indices.append(i)
+
+    # Ensure we have at least the first frame with players
+    if first_frame_with_players not in sample_indices:
+        sample_indices.insert(0, first_frame_with_players)
+
+    # Limit to first 5 sample frames for efficiency
+    sample_indices = sample_indices[:5]
+
+    print(f"🎯 Using {len(sample_indices)} sample frames for team color analysis")
+
+    # Load sample frames
     cap = cv2.VideoCapture(input_video_path)
-    for _ in range(first_frame_with_players):
-        cap.read()  # Skip to the frame we want
-    ret, first_frame = cap.read()
+    for frame_idx in sample_indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        if ret:
+            sample_frames.append(frame)
     cap.release()
 
-    if ret and first_frame_with_players < len(tracks["players"]):
+    # Initialize team colors using first sample frame
+    if sample_frames and first_frame_with_players < len(tracks["players"]):
         team_assigner.assign_team_color(
-            first_frame, tracks["players"][first_frame_with_players]
+            sample_frames[0], tracks["players"][first_frame_with_players]
         )
     else:
         # If no frames have player detections, use default colors
         print("⚠️  No player detections found, using default team colors")
-        team_assigner.assign_team_color(first_frame if ret else None, {})
+        team_assigner.assign_team_color(None, {})
 
-    # Process team assignment for each frame (optimized for large videos)
+    # Use optimized batch team assignment
     print("🎨 Assigning teams to players...")
     total_frames = len(tracks["players"])
 
@@ -1010,125 +1174,26 @@ def process_team_assignment_and_ball_tracking(
     setup_signal_handlers()
     start_time = time.time()
 
-    # For very large videos, use different optimization strategies
-    if total_frames > 150000:  # More than ~83 minutes at 30fps - use ultra-fast mode
-        print(
-            f"⚡ Ultra-large video detected ({total_frames:,} frames). Using ultra-fast team assignment..."
-        )
-        # For ultra-large videos, use default team assignments to save time
-        print(
-            "🚀 Skipping detailed team assignment for ultra-large video - using default teams"
-        )
+    # Use the new optimized batch assignment method for all video sizes
+    print(f"🚀 Using optimized batch team assignment for {total_frames:,} frames")
 
-        # Assign default teams to all players without frame analysis
-        for frame_idx in range(total_frames):
-            if tracks["players"][frame_idx]:
-                for player_id, track in tracks["players"][frame_idx].items():
-                    # Simple alternating team assignment based on player ID
-                    team = 1 if int(player_id) % 2 == 0 else 2
-                    tracks["players"][frame_idx][player_id]["team"] = team
-                    tracks["players"][frame_idx][player_id]["team_color"] = (
-                        team_assigner.team_colors.get(team, [0, 0, 255])
-                    )
-
-        print(f"✅ Ultra-fast team assignment completed for {total_frames:,} frames")
-        frame_indices = []  # Skip the normal processing
-
-    elif total_frames > 50000:  # More than ~28 minutes at 30fps - use optimized mode
-        print(
-            f"⚡ Large video detected ({total_frames:,} frames). Using optimized team assignment..."
-        )
-        # Sample every 20th frame for team assignment to speed up processing further
-        sample_interval = 20
-        frame_indices = list(range(0, total_frames, sample_interval))
-        print(
-            f"📊 Processing {len(frame_indices):,} sample frames for team assignment..."
-        )
+    # Determine max samples based on video size
+    if total_frames > 50000:
+        max_samples = 20  # Very large videos - minimal color analysis
+    elif total_frames > 10000:
+        max_samples = 30  # Large videos - moderate color analysis
     else:
-        frame_indices = list(range(total_frames))
+        max_samples = 50  # Smaller videos - more thorough color analysis
 
-    frame_num = 0
-    processed_frames = 0
+    team_assigner.assign_teams_batch(tracks, sample_frames, max_samples=max_samples)
+    assignment_time = time.time() - start_time
 
-    # Only process frames if we have frame_indices (not in ultra-fast mode)
-    if frame_indices:
-        with VideoFrameIterator(input_video_path, batch_size=50) as frame_iterator:
-            for batch_frames in frame_iterator:
-                # Check for shutdown request
-                if shutdown_requested:
-                    print(
-                        "⚠️  Shutdown requested during team assignment. Saving progress..."
-                    )
-                    break
+    print(
+        f"✅ Optimized team assignment completed in {assignment_time:.2f}s for {total_frames:,} frames"
+    )
+    print(f"⚡ Performance: {assignment_time/total_frames*1000:.3f}ms per frame")
 
-                for frame in batch_frames:
-                    if frame_num in frame_indices and frame_num < len(
-                        tracks["players"]
-                    ):
-                        player_track = tracks["players"][frame_num]
-                        for player_id, track in player_track.items():
-                            team = team_assigner.get_player_team(
-                                frame, track["bbox"], player_id
-                            )
-                            tracks["players"][frame_num][player_id]["team"] = team
-                            tracks["players"][frame_num][player_id]["team_color"] = (
-                                team_assigner.team_colors[team]
-                            )
-                        processed_frames += 1
-
-                        # Progress update for large videos
-                        if processed_frames % 1000 == 0:
-                            progress = (processed_frames / len(frame_indices)) * 100
-                            elapsed_time = time.time() - start_time
-                            print(
-                                f"🎨 Team assignment progress: {progress:.1f}% ({processed_frames:,}/{len(frame_indices):,} frames) - {elapsed_time:.1f}s elapsed"
-                            )
-
-                    frame_num += 1
-                    if frame_num >= len(tracks["players"]):
-                        break
-                if frame_num >= len(tracks["players"]) or shutdown_requested:
-                    break
-                cleanup_memory()
-    else:
-        print("⏭️  Skipping frame-by-frame team assignment (ultra-fast mode)")
-
-    # For large videos, propagate team assignments to non-sampled frames (skip for ultra-fast mode)
-    if total_frames > 50000 and frame_indices:  # Only if not in ultra-fast mode
-        print("🔄 Propagating team assignments to all frames...")
-        for frame_idx in range(total_frames):
-            if frame_idx not in frame_indices and tracks["players"][frame_idx]:
-                # Find the nearest sampled frame
-                nearest_sampled = min(frame_indices, key=lambda x: abs(x - frame_idx))
-
-                # Copy team assignments from nearest sampled frame
-                for player_id, track in tracks["players"][frame_idx].items():
-                    if player_id in tracks["players"][nearest_sampled]:
-                        source_team = tracks["players"][nearest_sampled][player_id].get(
-                            "team", 1
-                        )
-                        source_color = tracks["players"][nearest_sampled][
-                            player_id
-                        ].get(
-                            "team_color", team_assigner.team_colors.get(1, [0, 0, 255])
-                        )
-                        tracks["players"][frame_idx][player_id]["team"] = source_team
-                        tracks["players"][frame_idx][player_id][
-                            "team_color"
-                        ] = source_color
-                    else:
-                        # Default assignment if player not found in sampled frame
-                        tracks["players"][frame_idx][player_id]["team"] = 1
-                        tracks["players"][frame_idx][player_id]["team_color"] = (
-                            team_assigner.team_colors.get(1, [0, 0, 255])
-                        )
-
-            # Progress update
-            if frame_idx % 10000 == 0:
-                progress = (frame_idx / total_frames) * 100
-                print(f"🔄 Propagation progress: {progress:.1f}%")
-    elif total_frames > 150000:
-        print("⏭️  Skipping propagation (ultra-fast mode - teams already assigned)")
+    # Team assignment is now complete - no additional processing needed
 
     # Ball assignment and pass/goal detection (optimized for large videos)
     print("⚽ Processing ball assignment and game events...")
@@ -1146,6 +1211,34 @@ def process_team_assignment_and_ball_tracking(
 
     total_frames = len(tracks["players"])
 
+    # OPTIMIZED BATCH PROCESSING FOR BALL ASSIGNMENT
+    print(f"🚀 Using optimized batch ball assignment for {total_frames:,} frames...")
+    start_time = time.time()
+
+    # Choose optimization strategy based on video size
+    if total_frames > 20000:
+        # Ultra-fast mode: sample every 5th frame and interpolate
+        ball_assignments = player_assigner.assign_ball_with_caching(
+            tracks, cache_interval=5
+        )
+        print("⚡ Ultra-fast mode: 5x sampling with interpolation")
+    elif total_frames > 5000:
+        # Fast mode: sample every 3rd frame and interpolate
+        ball_assignments = player_assigner.assign_ball_with_caching(
+            tracks, cache_interval=3
+        )
+        print("⚡ Fast mode: 3x sampling with interpolation")
+    else:
+        # Standard batch mode for smaller videos
+        ball_assignments = player_assigner.assign_ball_to_players_batch(
+            tracks, batch_size=200
+        )
+        print("⚡ Standard batch mode")
+
+    assignment_time = time.time() - start_time
+    print(f"✅ Ball assignment completed in {assignment_time:.2f}s")
+    print(f"⚡ Performance: {assignment_time/total_frames*1000:.3f}ms per frame")
+
     # For very large videos, optimize goal detection by reducing frame reads
     goal_detection_interval = (
         30 if total_frames > 50000 else 5
@@ -1155,58 +1248,98 @@ def process_team_assignment_and_ball_tracking(
             f"⚡ Optimizing goal detection: checking every {goal_detection_interval} frames for large video"
         )
 
-    # Pre-open video capture for goal detection to avoid repeated open/close operations
-    goal_detection_cap = (
-        cv2.VideoCapture(input_video_path) if goal_detection_interval > 0 else None
-    )
-    start_time = time.time()
+    # PERFORMANCE OPTIMIZATION: Disable video capture for goal detection to improve speed
+    goal_detection_cap = None  # Disabled for performance
 
-    for frame_num, player_track in enumerate(tracks["players"]):
+    # ULTRA-FAST EVENT DETECTION WITH AGGRESSIVE SAMPLING
+    print("🎯 Processing game events with ultra-fast sampling...")
+    event_start_time = time.time()
+
+    # Balanced sampling for accuracy vs speed
+    if total_frames > 5000:
+        # For large videos, sample every 3rd frame for better accuracy
+        sample_interval = 3
+        print(
+            f"⚡ Balanced mode: Processing every {sample_interval}rd frame ({total_frames//sample_interval} frames)"
+        )
+    elif total_frames > 2000:
+        # For medium videos, sample every 2nd frame
+        sample_interval = 2
+        print(
+            f"⚡ Fast mode: Processing every {sample_interval}nd frame ({total_frames//sample_interval} frames)"
+        )
+    else:
+        # For small videos, process every frame
+        sample_interval = 1
+        print(f"⚡ Full mode: Processing every frame ({total_frames} frames)")
+
+    # Process only sampled frames
+    processed_frames = 0
+    for frame_num in range(0, total_frames, sample_interval):
         # Check for shutdown request
         if shutdown_requested:
             print("⚠️  Shutdown requested during ball tracking. Saving progress...")
             break
 
-        ball_bbox = tracks["ball"][frame_num].get(1, {}).get("bbox", [])
+        # Get pre-computed ball assignment
+        assigned_player = (
+            ball_assignments[frame_num] if frame_num < len(ball_assignments) else -1
+        )
+
+        # Get ball position for goal detection
         ball_position = tracks["ball"][frame_num].get(1, {}).get("position", None)
 
-        # Only assign ball if we have a valid bbox
-        if ball_bbox and len(ball_bbox) == 4:
-            assigned_player = player_assigner.assign_ball_to_player(
-                player_track, ball_bbox
-            )
-        else:
-            assigned_player = -1
+        # Get player track for current frame
+        player_track = (
+            tracks["players"][frame_num] if frame_num < len(tracks["players"]) else {}
+        )
 
-        if assigned_player != -1:
-            current_team = tracks["players"][frame_num][assigned_player]["team"]
-            tracks["players"][frame_num][assigned_player]["has_ball"] = True
-            team_ball_control.append(current_team)
+        # Scoreboard analysis (if enabled and at appropriate intervals)
+        if (
+            scoreboard_analyzer and frame_num % 30 == 0
+        ):  # Analyze every 30 frames for efficiency
+            # Read frame for scoreboard analysis
+            cap = cv2.VideoCapture(input_video_path)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+            ret, frame = cap.read()
+            if ret:
+                scoreboard_analyzer.analyze_frame(frame, frame_num)
+            cap.release()
 
-            # Count passes with improved accuracy, passing frame number
+        processed_frames += 1
+
+        if assigned_player != -1 and assigned_player in player_track:
+            current_team = player_track[assigned_player]["team"]
+            player_track[assigned_player]["has_ball"] = True
+
+            # Process events on sampled frames with better accuracy
             pass_counter.count_passes(assigned_player, current_team, frame_num)
+            tackle_counter.detect_tackles_and_interceptions(
+                player_track, assigned_player, current_team, frame_num
+            )
 
-            # Enhanced goal detection using field keypoints (optimized for large videos)
-            if (
-                ball_position
-                and frame_num % goal_detection_interval == 0
-                and goal_detection_cap
-            ):
-                # Use pre-opened video capture for efficiency
-                goal_detection_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-                ret, current_frame = goal_detection_cap.read()
+            # PERFORMANCE OPTIMIZATION: Skip video frame reading completely for speed
+            # Goal detection will work with ball position data only
 
-                if ret:
-                    # Update field keypoints for current frame
-                    goal_detector.update_keypoints(current_frame)
+            # Use goal detection without frame reading for better performance
+            if ball_position:
+                ball_info = tracks["ball"][frame_num].get(1, {})
+                ball_confidence = ball_info.get("confidence")
+                ball_source = ball_info.get("source")
 
-                    # Get enhanced ball information from tracks
-                    ball_info = tracks["ball"][frame_num].get(1, {})
-                    ball_confidence = ball_info.get("confidence")
-                    ball_source = ball_info.get("source")
+                # Use original enhanced goal detector
+                goal_event = goal_detector.detect_goal(
+                    ball_position,
+                    assigned_player,
+                    current_team,
+                    frame_num,
+                    ball_confidence=ball_confidence,
+                    ball_source=ball_source,
+                )
 
-                    # Detect goals using enhanced system with ball detection quality
-                    goal_event = goal_detector.detect_goal(
+                # Use new enhanced goal detector for better accuracy
+                if improved_goal_detector:
+                    enhanced_goal_event = improved_goal_detector.detect_goal(
                         ball_position,
                         assigned_player,
                         current_team,
@@ -1215,67 +1348,58 @@ def process_team_assignment_and_ball_tracking(
                         ball_source=ball_source,
                     )
 
-                    # For large videos, skip redundant goal detection to save processing time
-                    if total_frames <= 50000:
-                        # Also use the old system for comparison (optional, only for smaller videos)
-                        pass_counter.detect_goal(
-                            ball_position, assigned_player, current_team, frame_num
-                        )
-
-                    # Scoreboard analysis (if enabled, with reduced frequency for large videos)
-                    if scoreboard_analyzer:
-                        # For large videos, analyze scoreboard less frequently
-                        scoreboard_interval = 60 if total_frames > 50000 else 30
-                        if frame_num % scoreboard_interval == 0:
-                            scoreboard_analyzer.analyze_frame(current_frame, frame_num)
-
-            # Detect tackles and interceptions (optimized frequency for large videos)
-            if total_frames > 50000:
-                # For large videos, check tackles every 3rd frame to reduce overhead
-                if frame_num % 3 == 0:
-                    tackle_counter.detect_tackles_and_interceptions(
-                        player_track, assigned_player, current_team, frame_num
-                    )
-            else:
-                tackle_counter.detect_tackles_and_interceptions(
-                    player_track, assigned_player, current_team, frame_num
+            # Also use simplified goal detection as backup
+            if ball_position:
+                pass_counter.detect_goal(
+                    ball_position, assigned_player, current_team, frame_num
                 )
         else:
-            # No player has the ball, pass -1 to indicate this
+            # No player has the ball - minimal processing
             pass_counter.count_passes(-1, None, frame_num)
+            tackle_counter.detect_tackles_and_interceptions(
+                player_track, -1, None, frame_num
+            )
 
-            # Reduced frequency tackle detection when no ball possession
-            if total_frames > 50000:
-                if frame_num % 5 == 0:  # Even less frequent when no possession
-                    tackle_counter.detect_tackles_and_interceptions(
-                        player_track, -1, None, frame_num
-                    )
-            else:
-                tackle_counter.detect_tackles_and_interceptions(
-                    player_track, -1, None, frame_num
-                )
-
-            # Still check for goals even if no player has the ball (optimized)
-            if ball_position and frame_num % goal_detection_interval == 0:
-                pass_counter.detect_goal(ball_position, -1, None, frame_num)
-
-            team_ball_control.append(team_ball_control[-1] if team_ball_control else 1)
-
-        # Progress update for large videos with performance metrics
-        progress_interval = 5000 if total_frames > 50000 else 1000
-        if frame_num % progress_interval == 0 and frame_num > 0:
+        # OPTIMIZED: Less frequent progress updates to reduce console overhead
+        if processed_frames % max(1, (total_frames // sample_interval) // 5) == 0:
             progress = (frame_num / total_frames) * 100
-            elapsed_time = time.time() - start_time
-            frames_per_second = frame_num / elapsed_time if elapsed_time > 0 else 0
-            estimated_remaining = (
-                (total_frames - frame_num) / frames_per_second
-                if frames_per_second > 0
-                else 0
+            elapsed_time = time.time() - event_start_time
+            frames_per_second = (
+                processed_frames / elapsed_time if elapsed_time > 0 else 0
             )
             print(
-                f"⚽ Ball tracking progress: {progress:.1f}% ({frame_num:,}/{total_frames:,} frames) - "
-                f"{elapsed_time:.1f}s elapsed, {frames_per_second:.1f} fps, ~{estimated_remaining/60:.1f}min remaining"
+                f"⚡ Event detection: {progress:.1f}% ({processed_frames} sampled frames) - {frames_per_second:.1f} fps"
             )
+
+    # Fill team_ball_control for all frames using interpolation
+    print("🔄 Interpolating team ball control for all frames...")
+    team_ball_control = []
+    last_team = 1
+
+    for frame_num in range(total_frames):
+        assigned_player = (
+            ball_assignments[frame_num] if frame_num < len(ball_assignments) else -1
+        )
+
+        if (
+            assigned_player != -1
+            and frame_num < len(tracks["players"])
+            and assigned_player in tracks["players"][frame_num]
+        ):
+            current_team = tracks["players"][frame_num][assigned_player]["team"]
+            tracks["players"][frame_num][assigned_player]["has_ball"] = True
+            team_ball_control.append(current_team)
+            last_team = current_team
+        else:
+            team_ball_control.append(last_team)
+
+    event_time = time.time() - event_start_time
+    print(
+        f"✅ Event detection completed in {event_time:.2f}s ({processed_frames} frames processed)"
+    )
+    print(
+        f"⚡ Performance: {event_time/processed_frames*1000:.3f}ms per processed frame"
+    )
 
     # Clean up video capture
     if goal_detection_cap:
@@ -1291,12 +1415,26 @@ def process_team_assignment_and_ball_tracking(
     # Process final statistics and export CSV files
     team_ball_control = np.array(team_ball_control)
 
-    # Get enhanced goal statistics
+    # Get enhanced goal statistics from both systems
     enhanced_goal_stats = goal_detector.get_goal_statistics()
+    improved_goal_stats = None
+    if improved_goal_detector:
+        improved_goal_stats = improved_goal_detector.get_goal_statistics()
+        print(
+            f"🎯 Enhanced goal detector found {improved_goal_stats['total_goals']} goals"
+        )
+        print(f"   Team 1: {improved_goal_stats['team_goals'].get(1, 0)} goals")
+        print(f"   Team 2: {improved_goal_stats['team_goals'].get(2, 0)} goals")
 
-    # Calculate final goal statistics using priority system
-    final_team_goals, final_player_goals = calculate_final_goal_stats(
-        pass_counter, enhanced_goal_stats, manual_goals, scoreboard_analyzer
+    # Calculate final goal statistics using fusion approach for maximum accuracy
+    from src.utils.goal_utils import calculate_final_goal_stats_fusion
+
+    final_team_goals, final_player_goals = calculate_final_goal_stats_fusion(
+        pass_counter,
+        enhanced_goal_stats,
+        improved_goal_stats,
+        manual_goals,
+        scoreboard_analyzer,
     )
 
     # Update goal detector with final counts for consistency
@@ -1332,6 +1470,7 @@ def generate_output_video_memory_efficient(
     enable_camera_movement,
     enable_speed_distance,
     batch_size,
+    device=None,
 ):
     """Generate output video with annotations in a memory-efficient way."""
     from src.utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
@@ -1340,10 +1479,11 @@ def generate_output_video_memory_efficient(
 
     # Initialize tracker for drawing with enhanced ball detection
     tracker = Tracker(
-        "data/models/best_detect.pt",
+        "data/models/best_player_detect.pt",
         enable_jersey_detection=True,
-        ball_model_path="data/models/best_ball.pt",
+        ball_model_path="data/models/best_ball_latest.pt",
         enable_enhanced_ball_detection=True,
+        device=device,
     )
 
     # Initialize other components if needed
@@ -1660,6 +1800,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable trajectory analysis for players and ball movement patterns",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device to run models on (auto, cpu, cuda, cuda:0, etc.). Default: auto-detect best available device",
+    )
 
     args = parser.parse_args()
 
@@ -1742,4 +1888,5 @@ if __name__ == "__main__":
         upload_csv_only=args.upload_csv_only,
         use_enhanced_stats=args.use_enhanced_stats,
         enable_trajectory_analysis=args.enable_trajectory_analysis,
+        device=args.device,
     )

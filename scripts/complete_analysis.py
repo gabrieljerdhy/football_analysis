@@ -81,7 +81,7 @@ def complete_large_video_analysis(
     print("\n🔧 Initializing analysis components...")
 
     # Initialize Goal Detection System
-    field_keypoints_detector = FieldKeypointsDetector("models/best_keypoint.pt")
+    field_keypoints_detector = FieldKeypointsDetector("models/best_field_keypoint.pt")
     goal_detector = GoalDetector(field_keypoints_detector)
 
     # Load manual goals if provided
@@ -98,7 +98,7 @@ def complete_large_video_analysis(
 
     # Interpolate Ball Positions
     tracker = Tracker(
-        "models/best_detect.pt", enable_jersey_detection=False
+        "models/best_player_detect.pt", enable_jersey_detection=False
     )  # Just for interpolation
     tracks["ball"] = tracker.interpolate_ball_positions(tracks["ball"])
 

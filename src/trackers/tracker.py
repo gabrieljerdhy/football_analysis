@@ -34,6 +34,7 @@ class Tracker:
         ball_model_path=None,
         enable_enhanced_ball_detection=True,
         config=None,
+        device=None,
     ):
         """
         Initialize the Tracker with enhanced ball detection capabilities.
@@ -44,6 +45,7 @@ class Tracker:
             ball_model_path (str): Path to specialized ball detection model (optional)
             enable_enhanced_ball_detection (bool): Enable enhanced ball detection using specialized model
             config (BallDetectionConfig): Configuration object for ball detection
+            device (str | torch.device, optional): Device to run models on (auto, cpu, cuda, cuda:0, etc.)
         """
         # Use configuration if provided, otherwise use defaults
         if config is None:
@@ -61,8 +63,32 @@ class Tracker:
         if enable_enhanced_ball_detection is not None:
             self.config.enable_enhanced_ball_detection = enable_enhanced_ball_detection
 
-        # Initialize main model
+        # Configure device for GPU acceleration
+        from src.utils import get_optimal_device
+
+        self.device = get_optimal_device(device, verbose=False)
+
+        # Performance optimization settings
+        self.use_half_precision = self.device.type == "cuda"
+        self.optimized_batch_size = 64 if self.device.type == "cuda" else 16
+        self.ball_batch_size = 32 if self.device.type == "cuda" else 8
+        self.imgsz = 640  # Optimized image size for inference
+
+        # Initialize main model with device configuration
         self.model = YOLO(self.config.general_model_path)
+        # Move model to specified device
+        if hasattr(self.model, "to"):
+            self.model.to(self.device)
+
+        # Optimize model for inference
+        if self.use_half_precision and self.device.type == "cuda":
+            try:
+                self.model.model.half()
+                print(f"✅ Half precision enabled for main model on {self.device}")
+            except Exception as e:
+                print(f"⚠️ Half precision failed for main model: {e}")
+                self.use_half_precision = False
+
         self.tracker = sv.ByteTrack()
 
         # Enhanced ball detection configuration
@@ -75,8 +101,22 @@ class Tracker:
             if os.path.exists(self.ball_model_path):
                 try:
                     self.ball_model = YOLO(self.ball_model_path)
+                    # Move ball model to specified device
+                    if hasattr(self.ball_model, "to"):
+                        self.ball_model.to(self.device)
+
+                    # Optimize ball model for inference
+                    if self.use_half_precision and self.device.type == "cuda":
+                        try:
+                            self.ball_model.model.half()
+                            print(
+                                f"✅ Half precision enabled for ball model on {self.device}"
+                            )
+                        except Exception as e:
+                            print(f"⚠️ Half precision failed for ball model: {e}")
+
                     print(
-                        f"✅ Enhanced ball detection enabled with model: {self.ball_model_path}"
+                        f"✅ Enhanced ball detection enabled with model: {self.ball_model_path} on {self.device}"
                     )
                 except Exception as e:
                     print(f"⚠️ Enhanced ball detection disabled due to error: {e}")
@@ -116,6 +156,40 @@ class Tracker:
                 self.jersey_detector = None
         else:
             self.jersey_detector = None
+
+        # Warm up models for optimal performance
+        self._warmup_models()
+
+    def _warmup_models(self):
+        """Warm up models with dummy data for optimal performance."""
+        if self.device.type == "cuda":
+            try:
+                import torch
+
+                # Create dummy frame for warmup
+                dummy_frame = torch.zeros(
+                    (3, self.imgsz, self.imgsz), dtype=torch.uint8
+                ).numpy()
+                dummy_frame = np.transpose(
+                    dummy_frame, (1, 2, 0)
+                )  # Convert to HWC format
+
+                print(f"🔥 Warming up models on {self.device}...")
+
+                # Warmup main model
+                _ = self.model.predict(
+                    dummy_frame, verbose=False, device=self.device, imgsz=self.imgsz
+                )
+
+                # Warmup ball model if available
+                if self.ball_model is not None:
+                    _ = self.ball_model.predict(
+                        dummy_frame, verbose=False, device=self.device, imgsz=self.imgsz
+                    )
+
+                print("✅ Model warmup completed")
+            except Exception as e:
+                print(f"⚠️ Model warmup failed: {e}")
 
     def add_position_to_tracks(self, tracks):
         for object, object_tracks in tracks.items():
@@ -228,14 +302,22 @@ class Tracker:
         if not self.enable_enhanced_ball_detection or self.ball_model is None:
             return None
 
-        batch_size = min(10, len(frames))
+        if len(frames) == 0:
+            return []
+
+        batch_size = min(self.ball_batch_size, len(frames))
         ball_detections = []
 
         for i in range(0, len(frames), batch_size):
             batch_frames = frames[i : i + batch_size]
-            # Use higher confidence for specialized ball model
+            # Use higher confidence for specialized ball model with optimized parameters
             detections_batch = self.ball_model.predict(
-                batch_frames, conf=self.ball_confidence_threshold
+                batch_frames,
+                conf=self.ball_confidence_threshold,
+                device=self.device,
+                imgsz=self.imgsz,
+                half=self.use_half_precision,
+                verbose=False,
             )
             ball_detections += detections_batch
 
@@ -369,31 +451,53 @@ class Tracker:
         )
 
     def detect_frames(self, frames):
-        batch_size = 20
+        batch_size = min(self.optimized_batch_size, len(frames))
         detections = []
         for i in range(0, len(frames), batch_size):
-            detections_batch = self.model.predict(frames[i : i + batch_size], conf=0.1)
+            detections_batch = self.model.predict(
+                frames[i : i + batch_size],
+                conf=0.1,
+                device=self.device,
+                imgsz=self.imgsz,
+                half=self.use_half_precision,
+                verbose=False,
+            )
             detections += detections_batch
         return detections
 
     def detect_frames_memory_efficient(self, frames, progress_callback=None):
-        """Memory-efficient frame detection with smaller batches and cleanup."""
-        batch_size = min(10, len(frames))  # Smaller batches for memory efficiency
+        """Memory-efficient frame detection with optimized batches and cleanup."""
+        if len(frames) == 0:
+            return []
+
+        # Use optimized batch sizes for better GPU utilization
+        batch_size = min(self.optimized_batch_size, len(frames))
         detections = []
 
         for i in range(0, len(frames), batch_size):
             batch_frames = frames[i : i + batch_size]
-            detections_batch = self.model.predict(batch_frames, conf=0.1)
+            detections_batch = self.model.predict(
+                batch_frames,
+                conf=0.1,
+                device=self.device,
+                imgsz=self.imgsz,
+                half=self.use_half_precision,
+                verbose=False,
+            )
             detections += detections_batch
 
             # Progress callback
             if progress_callback:
                 progress_callback(i + len(batch_frames), len(frames))
 
-            # Force cleanup after each batch
-            import gc
+        # Single cleanup at the end instead of after each batch for better performance
+        import gc
 
-            gc.collect()
+        gc.collect()
+        if self.device.type == "cuda":
+            import torch
+
+            torch.cuda.empty_cache()
 
         return detections
 
@@ -819,3 +923,31 @@ class Tracker:
             output_video_frames.append(frame)
 
         return output_video_frames
+
+    def _propagate_jersey_numbers(self, tracks):
+        """
+        Propagate detected jersey numbers to all frames for each player.
+
+        Args:
+            tracks: Player tracking data to update with jersey numbers
+        """
+        if not self.enable_jersey_detection or self.jersey_detector is None:
+            return
+
+        # Get all confirmed jersey numbers from cache
+        confirmed_jerseys = self.jersey_detector.player_jersey_cache
+
+        print(
+            f"🔄 Propagating {len(confirmed_jerseys)} confirmed jersey numbers to all frames..."
+        )
+
+        # Apply confirmed jersey numbers to all frames
+        for frame_num, player_track in enumerate(tracks["players"]):
+            for track_id, track_info in player_track.items():
+                if track_id in confirmed_jerseys:
+                    track_info["jersey_number"] = confirmed_jerseys[track_id]
+                else:
+                    # Use track_id as fallback for unconfirmed players
+                    track_info["jersey_number"] = track_id
+
+        print(f"✅ Jersey numbers propagated to {len(tracks['players']):,} frames")

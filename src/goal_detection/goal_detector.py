@@ -14,8 +14,8 @@ class GoalDetector:
     """
 
     def __init__(
-        self, keypoints_detector=None, goal_cooldown_frames=450
-    ):  # IMPROVED: Increased to 450 frames (15 seconds at 30fps) to prevent duplicate detections
+        self, keypoints_detector=None, goal_cooldown_frames=300
+    ):  # FIXED: Reduced to 300 frames (10 seconds at 30fps) to allow multiple goals
         """
         Initialize the goal detector.
 
@@ -45,15 +45,15 @@ class GoalDetector:
         self.ball_trajectory = []  # Track ball movement for goal validation
         self.max_trajectory_length = 20  # Increased for better trajectory analysis
 
-        # IMPROVED: Stricter parameters to reduce false positives
+        # FIXED: Balanced parameters to allow goal detection while reducing false positives
         self.min_trajectory_for_goal = (
-            12  # IMPROVED: Increased from 5 to 12 for more evidence
+            6  # FIXED: Reduced from 12 to 6 for better sensitivity
         )
         self.goal_direction_threshold = (
-            0.8  # IMPROVED: Increased from 0.6 to 0.8 for more decisive movement
+            0.6  # FIXED: Reduced from 0.8 to 0.6 for more flexible movement detection
         )
         self.goal_speed_threshold = (
-            15  # IMPROVED: Increased from 10 to 15 for more realistic goal speeds
+            8  # FIXED: Reduced from 15 to 8 for more realistic goal speeds
         )
 
         # Fallback goal areas (if keypoints not detected)
@@ -105,10 +105,12 @@ class GoalDetector:
             width (int): Video width
             height (int): Video height
         """
-        # IMPROVED: Smaller goal areas to reduce false positives
-        goal_width_percent = 0.015  # IMPROVED: 1.5% of video width (was 4% - too large)
+        # BALANCED: Realistic goal areas for better detection
+        goal_width_percent = (
+            0.08  # FIXED: 8% of video width for realistic goal detection
+        )
         goal_height_percent = (
-            0.25  # IMPROVED: 25% of video height (was 35% - too large)
+            0.35  # FIXED: 35% of video height for proper goal coverage
         )
 
         goal_width = int(width * goal_width_percent)
@@ -297,17 +299,18 @@ class GoalDetector:
             left_area["x_min"] <= x <= left_area["x_max"]
             and left_area["y_min"] <= y <= left_area["y_max"]
         ):
-            # IMPROVED: Require decisive movement toward goal
-            if len(self.ball_trajectory) >= 3:
-                # Check movement over last 3 frames for more reliable direction
-                # Extract x positions from ball_info dictionaries
+            # SIMPLIFIED: Allow goal detection if ball is in goal area
+            if len(self.ball_trajectory) >= 2:
+                # Check movement over last 2 frames for direction
                 current_x = self.ball_trajectory[-1]["position"][0]
-                previous_x = self.ball_trajectory[-3]["position"][0]
+                previous_x = self.ball_trajectory[-2]["position"][0]
                 movement_x = current_x - previous_x
-                # Ball must be moving decisively toward the goal (not just stationary)
-                if movement_x < -5:  # Moving left with minimum speed
+                # Ball moving toward goal OR stationary in goal area
+                if movement_x <= 1:  # Moving left or stationary (very lenient)
                     return "left"
-            # No longer return "left" by default - require evidence of movement
+            else:
+                # If not enough trajectory data, allow goal if ball is in area
+                return "left"
 
         # Check right goal with enhanced validation
         right_area = self.fallback_goal_areas["right"]
@@ -315,17 +318,18 @@ class GoalDetector:
             right_area["x_min"] <= x <= right_area["x_max"]
             and right_area["y_min"] <= y <= right_area["y_max"]
         ):
-            # IMPROVED: Require decisive movement toward goal
-            if len(self.ball_trajectory) >= 3:
-                # Check movement over last 3 frames for more reliable direction
-                # Extract x positions from ball_info dictionaries
+            # SIMPLIFIED: Allow goal detection if ball is in goal area
+            if len(self.ball_trajectory) >= 2:
+                # Check movement over last 2 frames for direction
                 current_x = self.ball_trajectory[-1]["position"][0]
-                previous_x = self.ball_trajectory[-3]["position"][0]
+                previous_x = self.ball_trajectory[-2]["position"][0]
                 movement_x = current_x - previous_x
-                # Ball must be moving decisively toward the goal (not just stationary)
-                if movement_x > 5:  # Moving right with minimum speed
+                # Ball moving toward goal OR stationary in goal area
+                if movement_x >= -1:  # Moving right or stationary (very lenient)
                     return "right"
-            # No longer return "right" by default - require evidence of movement
+            else:
+                # If not enough trajectory data, allow goal if ball is in area
+                return "right"
 
         return None
 
@@ -380,16 +384,14 @@ class GoalDetector:
         # Store confidence score for analysis
         self.goal_confidence_scores.append(confidence_score)
 
-        # IMPROVED: Higher validation threshold to reduce false positives
-        base_threshold = (
-            0.75  # IMPROVED: Increased from 0.5 to 0.75 for better accuracy
-        )
+        # LENIENT: Very permissive validation threshold for goal detection
+        base_threshold = 0.3  # FIXED: Much lower threshold for better goal detection
         field_confidence_bonus = (
-            field_context["field_confidence"] * 0.05
-        )  # IMPROVED: Reduced bonus to prevent over-sensitivity
+            field_context["field_confidence"] * 0.2
+        )  # FIXED: Higher bonus for field context
         validation_threshold = max(
-            0.65, base_threshold - field_confidence_bonus
-        )  # IMPROVED: Minimum 0.65 (was 0.4) for stricter validation
+            0.2, base_threshold - field_confidence_bonus
+        )  # FIXED: Very low minimum threshold
 
         # Goal is valid if confidence score is above dynamic threshold
         is_valid = confidence_score >= validation_threshold

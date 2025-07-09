@@ -12,13 +12,15 @@ The enhanced goal detection system consists of two main components:
 ## Features
 
 ### FieldKeypointsDetector
-- Detects field keypoints using YOLO model (`best_keypoint.pt`)
+
+- Detects field keypoints using YOLO model (`best_field_keypoint.pt`)
 - Identifies goal posts, penalty areas, center circle, and other field markers
 - Dynamically calculates goal area boundaries based on detected keypoints
 - Provides fallback to hardcoded areas if keypoints are not detected
 - Visualizes detected keypoints and goal areas
 
 ### GoalDetector
+
 - Enhanced goal detection using field keypoints
 - Ball trajectory analysis for goal validation
 - Cooldown mechanism to prevent duplicate goal detections
@@ -87,6 +89,7 @@ stats = goal_detector.get_goal_statistics()
 ### Goal Events
 
 Each detected goal includes:
+
 - Team that scored
 - Player who scored (if known)
 - Frame number
@@ -97,6 +100,7 @@ Each detected goal includes:
 ### CSV Export
 
 Enhanced goal statistics are exported to CSV files:
+
 - Player stats include both regular and enhanced goal counts
 - Team stats include both regular and enhanced goal counts
 
@@ -120,6 +124,7 @@ python test_goal_detection.py
 ## Model Requirements
 
 The system requires the field keypoints YOLO model:
+
 - `models/best_keypoint.pt`: Field keypoints detection model
 
 Make sure this model is available in your models directory.
@@ -139,11 +144,13 @@ The enhanced system provides several improvements over the original goal detecti
 ### Common Issues
 
 1. **No keypoints detected**:
+
    - Check if `best_keypoint.pt` model exists
    - Verify model confidence threshold
    - System will fallback to hardcoded areas
 
 2. **Goals not detected**:
+
    - Check ball tracking accuracy
    - Verify goal area boundaries
    - Adjust confidence thresholds

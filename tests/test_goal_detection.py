@@ -25,7 +25,7 @@ def test_field_keypoints_detector():
 
     try:
         # Initialize detector
-        detector = FieldKeypointsDetector("../models/best_keypoint.pt")
+        detector = FieldKeypointsDetector("../models/best_field_keypoint.pt")
         print("✓ FieldKeypointsDetector initialized successfully")
 
         # Test keypoint detection
@@ -91,7 +91,7 @@ def test_integration():
         dummy_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
 
         # Initialize components
-        keypoints_detector = FieldKeypointsDetector("../models/best_fk.pt")
+        keypoints_detector = FieldKeypointsDetector("../models/best_field_keypoint.pt")
         goal_detector = GoalDetector(keypoints_detector)
 
         # Update keypoints

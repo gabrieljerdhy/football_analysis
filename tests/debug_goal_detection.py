@@ -15,10 +15,10 @@ import numpy as np
 # Add parent directory to path to access project modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from goal_detection import FieldKeypointsDetector, GoalDetector
-from player_ball_assigner import PlayerBallAssigner
-from trackers import Tracker
-from utils import read_video
+from src.goal_detection import FieldKeypointsDetector, GoalDetector
+from src.player_ball_assigner import PlayerBallAssigner
+from src.trackers import Tracker
+from src.utils import read_video
 
 
 def debug_ball_tracking(video_path, max_frames=100):
@@ -30,7 +30,7 @@ def debug_ball_tracking(video_path, max_frames=100):
     print(f"📹 Loaded {len(video_frames)} frames")
 
     # Initialize tracker
-    tracker = Tracker("../models/best.pt")
+    tracker = Tracker("data/models/best_player_detect.pt")
 
     # Get tracks for first few frames
     debug_frames = video_frames[: min(max_frames, len(video_frames))]
@@ -94,7 +94,7 @@ def debug_field_keypoints(video_frames, max_frames=10):
     print(f"\n🎯 Debugging field keypoints detection:")
 
     # Initialize detector
-    keypoints_detector = FieldKeypointsDetector("../models/best_keypoint.pt")
+    keypoints_detector = FieldKeypointsDetector("data/models/best_field_keypoint.pt")
 
     total_keypoints = 0
     goal_keypoints_found = 0
@@ -204,7 +204,7 @@ def create_debug_video(video_path, output_path, max_frames=100):
     debug_frames = video_frames[: min(max_frames, len(video_frames))]
 
     # Get tracking data
-    tracker = Tracker("../models/best_detect.pt")
+    tracker = Tracker("data/models/best_player_detect.pt")
     tracks = tracker.get_object_tracks(
         debug_frames, read_from_stub=False, stub_path=None
     )
@@ -212,7 +212,7 @@ def create_debug_video(video_path, output_path, max_frames=100):
     tracks["ball"] = tracker.interpolate_ball_positions(tracks["ball"])
 
     # Initialize goal detection
-    keypoints_detector = FieldKeypointsDetector("../models/best_keypoint.pt")
+    keypoints_detector = FieldKeypointsDetector("data/models/best_field_keypoint.pt")
     goal_detector = GoalDetector(keypoints_detector)
 
     output_frames = []

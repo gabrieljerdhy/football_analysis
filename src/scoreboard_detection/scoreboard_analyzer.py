@@ -205,11 +205,50 @@ class ScoreboardAnalyzer:
 
         # Calculate overall confidence based on detection statistics
         detection_rate = self.successful_extractions / max(self.total_detections, 1)
-        overall_confidence = self.current_score["confidence"] * detection_rate
+        base_confidence = self.current_score["confidence"] * detection_rate
+
+        # Enhanced validation: Check for suspicious patterns
+        team1_score = self.current_score["team1_score"]
+        team2_score = self.current_score["team2_score"]
+
+        # Apply confidence penalties for suspicious scores
+        confidence_penalty = 0.0
+
+        # Penalty for tied scores (less common in football)
+        if team1_score == team2_score and team1_score > 0:
+            confidence_penalty += 0.1
+            self.logger.warning(
+                f"Tied score detected: {team1_score}-{team2_score}, applying confidence penalty"
+            )
+
+        # Penalty for very high scores (uncommon in football)
+        if team1_score > 5 or team2_score > 5:
+            confidence_penalty += 0.2
+            self.logger.warning(
+                f"High score detected: {team1_score}-{team2_score}, applying confidence penalty"
+            )
+
+        # Penalty for lack of score changes (real matches usually have score progression)
+        if len(self.score_changes) == 0 and (team1_score > 0 or team2_score > 0):
+            confidence_penalty += 0.15
+            self.logger.warning(
+                "No score changes detected but non-zero score found, applying confidence penalty"
+            )
+
+        # Apply penalties
+        overall_confidence = max(0.0, base_confidence - confidence_penalty)
+
+        # Additional validation: Check if score seems realistic for football
+        is_realistic = self._validate_football_score_realism(team1_score, team2_score)
+        if not is_realistic:
+            overall_confidence *= 0.5  # Halve confidence for unrealistic scores
+            self.logger.warning(
+                f"Unrealistic football score detected: {team1_score}-{team2_score}"
+            )
 
         return {
-            "team1_score": self.current_score["team1_score"],
-            "team2_score": self.current_score["team2_score"],
+            "team1_score": team1_score,
+            "team2_score": team2_score,
             "confidence": overall_confidence,
             "detection_method": "scoreboard",
             "frames_analyzed": self.frames_processed,
@@ -217,6 +256,8 @@ class ScoreboardAnalyzer:
             "successful_extractions": self.successful_extractions,
             "score_changes": len(self.score_changes),
             "detection_rate": detection_rate,
+            "confidence_penalty": confidence_penalty,
+            "is_realistic": is_realistic,
         }
 
     def get_score_timeline(self) -> List[Dict]:
@@ -278,3 +319,40 @@ class ScoreboardAnalyzer:
             return max(self.min_detection_confidence - 0.1, 0.3)
         else:
             return self.min_detection_confidence
+
+    def _validate_football_score_realism(
+        self, team1_score: int, team2_score: int
+    ) -> bool:
+        """
+        Validate if a score is realistic for a football match.
+
+        Args:
+            team1_score: First team's score
+            team2_score: Second team's score
+
+        Returns:
+            True if the score seems realistic for football
+        """
+        # Basic range check
+        if team1_score < 0 or team2_score < 0:
+            return False
+
+        # Very high scores are suspicious
+        if team1_score > 8 or team2_score > 8:
+            return False
+
+        # Total goals check - very high total is suspicious
+        total_goals = team1_score + team2_score
+        if total_goals > 10:
+            return False
+
+        # Tied scores are less common in football, especially higher tied scores
+        if team1_score == team2_score and team1_score > 1:
+            return False
+
+        # Large score differences are rare but possible
+        score_diff = abs(team1_score - team2_score)
+        if score_diff > 6:
+            return False
+
+        return True

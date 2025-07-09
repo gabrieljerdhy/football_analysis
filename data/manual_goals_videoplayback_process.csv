@@ -1,0 +1,5 @@
+frame_num,team,player_id,goal_type,confidence
+1200,1,-1,manual,1.0
+2400,1,-1,manual,1.0
+3600,1,-1,manual,1.0
+4800,1,-1,manual,1.0

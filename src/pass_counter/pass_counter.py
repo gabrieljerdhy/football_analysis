@@ -32,7 +32,7 @@ class PassCounter:
         # Goal detection parameters
         self.goal_detected = False
         self.goal_cooldown = 0
-        self.goal_cooldown_frames = 450  # FIXED: Increased to 450 frames (15 seconds at 30fps) to match enhanced detector
+        self.goal_cooldown_frames = 300  # FIXED: Reduced to 300 frames (10 seconds at 30fps) for better goal detection
 
         # Ball trajectory for basic validation
         self.ball_trajectory = []
@@ -360,13 +360,13 @@ class PassCounter:
         # Real football goal is approximately 7.32m wide × 2.44m high
         # On a typical football field view, goals are much smaller than previous implementation
 
-        # Calculate realistic goal dimensions (much smaller than before)
+        # Calculate balanced goal dimensions for better detection
         goal_width = int(
-            self.video_width * 0.008
-        )  # FIXED: 0.8% of width (was 4% - way too large!)
+            self.video_width * 0.06
+        )  # FIXED: 6% of width for realistic goal detection
         goal_height = int(
-            self.video_height * 0.12
-        )  # FIXED: 12% of height (was 35% - way too large!)
+            self.video_height * 0.30
+        )  # FIXED: 30% of height for proper goal coverage
 
         # Position goals in typical locations for football broadcasts
         goal_y_center = int(self.video_height * 0.5)  # Center vertically
@@ -489,11 +489,15 @@ class PassCounter:
 
         # For left goal, ball should be moving left (negative x direction)
         if goal_side == "left":
-            return movement_x < -5  # Ball must be moving left with minimum speed
+            return (
+                movement_x < -3
+            )  # Ball must be moving left with minimum speed (reduced from -5)
 
         # For right goal, ball should be moving right (positive x direction)
         elif goal_side == "right":
-            return movement_x > 5  # Ball must be moving right with minimum speed
+            return (
+                movement_x > 3
+            )  # Ball must be moving right with minimum speed (reduced from 5)
 
         return False
 

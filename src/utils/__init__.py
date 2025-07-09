@@ -5,6 +5,12 @@ from .bbox_utils import (
     measure_distance,
     measure_xy_distance,
 )
+from .device_utils import (
+    check_gpu_availability,
+    configure_device_environment,
+    get_optimal_device,
+    print_device_info,
+)
 from .video_utils import (
     VideoFrameIterator,
     cleanup_memory,

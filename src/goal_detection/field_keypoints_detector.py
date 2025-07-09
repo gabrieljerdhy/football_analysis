@@ -13,15 +13,50 @@ class FieldKeypointsDetector:
     Detects field keypoints using YOLO model and provides goal area detection capabilities.
     """
 
-    def __init__(self, model_path="models/best_keypoint.pt", confidence_threshold=0.7):
+    def __init__(
+        self,
+        model_path="models/best_field_keypoint.pt",
+        confidence_threshold=0.7,
+        device=None,
+    ):
         """
         Initialize the field keypoints detector with optimization features.
 
         Args:
             model_path (str): Path to the YOLO field keypoints model
             confidence_threshold (float): Confidence threshold for detections
+            device (str | torch.device, optional): Device to run model on (auto, cpu, cuda, cuda:0, etc.)
         """
+        # Configure device for GPU acceleration
+        sys.path.append("../")
+        try:
+            from src.utils import get_optimal_device
+        except ImportError:
+            # Handle relative imports when running from different contexts
+            import os
+
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            parent_dir = os.path.dirname(current_dir)
+            sys.path.insert(0, parent_dir)
+            from utils import get_optimal_device
+
+        self.device = get_optimal_device(device, verbose=False)
+
         self.model = YOLO(model_path)
+        # Move model to specified device
+        if hasattr(self.model, "to"):
+            self.model.to(self.device)
+
+        # Apply performance optimizations similar to tracker
+        if self.device.type == "cuda":
+            try:
+                self.model.model.half()  # Enable half precision for GPU
+                self.use_half_precision = True
+            except Exception:
+                self.use_half_precision = False
+        else:
+            self.use_half_precision = False
+
         self.confidence_threshold = confidence_threshold
 
         # Optimization parameters
@@ -145,9 +180,33 @@ class FieldKeypointsDetector:
 
     def _perform_keypoint_detection(self, frame):
         """
-        Perform actual keypoint detection on the frame.
+        Perform actual keypoint detection on the frame with optimizations and fallback strategies.
         """
-        results = self.model(frame, conf=self.confidence_threshold)
+        try:
+            results = self.model(
+                frame,
+                conf=self.confidence_threshold,
+                device=self.device,
+                imgsz=640,  # Optimized image size
+                half=self.use_half_precision,  # Use half precision if available
+                verbose=False,  # Reduce output overhead
+            )
+        except Exception as e:
+            print(f"⚠️  Keypoint detection failed: {e}")
+            # Try with lower confidence threshold as fallback
+            try:
+                print("🔄 Retrying with lower confidence threshold...")
+                results = self.model(
+                    frame,
+                    conf=max(0.3, self.confidence_threshold - 0.2),  # Lower threshold
+                    device=self.device,
+                    imgsz=640,
+                    half=False,  # Disable half precision for stability
+                    verbose=False,
+                )
+            except Exception as e2:
+                print(f"❌ Keypoint detection failed completely: {e2}")
+                return {}
 
         detected_keypoints = {}
 

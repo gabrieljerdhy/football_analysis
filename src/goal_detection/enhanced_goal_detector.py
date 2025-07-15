@@ -75,10 +75,10 @@ class EnhancedGoalDetector:
         self.goal_events = []
         self.goal_confidence_scores = []
 
-        # Enhanced detection parameters - optimized for maximum accuracy
+        # Enhanced detection parameters - optimized for maximum sensitivity
         self.min_trajectory_points = 1  # Minimal requirement for faster detection
-        self.goal_area_expansion_factor = 1.5  # Expand goal areas by 50%
-        self.confidence_threshold = 0.2  # Very low threshold for maximum sensitivity
+        self.goal_area_expansion_factor = 2.0  # Expand goal areas by 100%
+        self.confidence_threshold = 0.1  # Very low threshold for maximum sensitivity
 
         # Video dimensions and goal areas
         self.video_dimensions = None
@@ -86,9 +86,9 @@ class EnhancedGoalDetector:
 
         # Detection method weights for fusion - optimized for sensitivity
         self.detection_weights = {
-            "enhanced_areas": 0.5,  # Increased weight for area detection
-            "keypoints": 0.3,  # Reduced weight for keypoints
-            "trajectory": 0.2,  # Reduced weight for trajectory
+            "enhanced_areas": 0.8,  # High weight for area detection
+            "keypoints": 0.6,  # Moderate weight for keypoints
+            "trajectory": 0.4,  # Moderate weight for trajectory
         }
 
         # Final goal counts (for external override)
@@ -454,7 +454,7 @@ class EnhancedGoalDetector:
             validation_score += 0.15
 
         # Extremely relaxed threshold for maximum sensitivity
-        return validation_score >= 0.3
+        return validation_score >= 0.1
 
     def _update_ball_trajectory(self, ball_info: Dict[str, Any]):
         """Update ball trajectory with new position."""

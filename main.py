@@ -12,6 +12,11 @@ import numpy as np
 
 from src.camera_movement_estimator import CameraMovementEstimator
 from src.goal_detection import FieldKeypointsDetector, GoalDetector
+from src.goal_detection.goal_detection_integration import (
+    create_goal_detection_integrator,
+)
+
+# from src.models.unified_model_adapter import create_unified_adapter  # Temporarily disabled
 from src.pass_counter.pass_counter import PassCounter
 from src.pass_counter.tackle_counter import TackleCounter
 from src.pass_counter.unified_statistics_manager import (
@@ -27,6 +32,7 @@ from src.utils import read_video, save_video
 from src.utils.goal_utils import (
     calculate_final_goal_stats,
     export_consolidated_goal_statistics,
+    export_simplified_goal_statistics,
     load_manual_goals,
 )
 from src.view_transformer import ViewTransformer
@@ -279,9 +285,12 @@ def main(
 
     # Initialize Enhanced Goal Detection System for better accuracy
     from src.goal_detection.enhanced_goal_detector import EnhancedGoalDetector
+    from src.goal_detection.improved_goal_system import ImprovedGoalDetectionSystem
 
     enhanced_goal_detector = EnhancedGoalDetector(field_keypoints_detector)
+    improved_goal_system = ImprovedGoalDetectionSystem(field_keypoints_detector)
     print("✅ Enhanced goal detection system initialized for improved accuracy")
+    print("✅ Improved goal detection system initialized for maximum accuracy")
 
     # Configure optimization for better performance
     goal_detector.set_keypoint_optimization(
@@ -292,11 +301,18 @@ def main(
     scoreboard_analyzer = None
     if enable_scoreboard_detection:
         print("🎯 Initializing scoreboard detection system...")
+        total_frames = video_info.get("total_frames", None) if video_info else None
         scoreboard_analyzer = ScoreboardAnalyzer(
             detection_interval=30,  # Analyze every 30 frames for efficiency
             min_detection_confidence=0.6,
             min_extraction_confidence=0.6,
+            total_frames=total_frames,
+            analyze_last_percent=20.0,  # Focus on last 20% of video
         )
+        if total_frames:
+            print(
+                f"🎯 Scoreboard detection will analyze last 20% of video (frames {int(total_frames * 0.8)}-{total_frames})"
+            )
 
     # Load manual goals if provided
     manual_goals = load_manual_goals(goals_config)
@@ -436,6 +452,7 @@ def main(
                 # Update field keypoints for current frame
                 goal_detector.update_keypoints(video_frames[frame_num])
                 enhanced_goal_detector.update_keypoints(video_frames[frame_num])
+                improved_goal_system.update_keypoints(video_frames[frame_num])
 
                 # Get enhanced ball information from tracks
                 ball_info = tracks["ball"][frame_num].get(1, {})
@@ -454,6 +471,16 @@ def main(
 
                 # Detect goals using new enhanced system for better accuracy
                 enhanced_goal_event = enhanced_goal_detector.detect_goal(
+                    ball_position,
+                    assigned_player,
+                    current_team,
+                    frame_num,
+                    ball_confidence=ball_confidence,
+                    ball_source=ball_source,
+                )
+
+                # Detect goals using improved system for maximum accuracy
+                improved_goal_event = improved_goal_system.detect_goal(
                     ball_position,
                     assigned_player,
                     current_team,
@@ -490,17 +517,19 @@ def main(
 
     team_ball_control = np.array(team_ball_control)
 
-    # Get enhanced goal statistics from both systems
+    # Get enhanced goal statistics from all systems
     enhanced_goal_stats = goal_detector.get_goal_statistics()
     improved_goal_stats = enhanced_goal_detector.get_goal_statistics()
+    improved_system_stats = improved_goal_system.get_goal_statistics()
 
     # Calculate final goal statistics using fusion approach for maximum accuracy
-    from src.utils.goal_utils import calculate_final_goal_stats_fusion
+    from src.utils.goal_utils import calculate_final_goal_stats_fusion_improved
 
-    final_team_goals, final_player_goals = calculate_final_goal_stats_fusion(
+    final_team_goals, final_player_goals = calculate_final_goal_stats_fusion_improved(
         pass_counter,
         enhanced_goal_stats,
         improved_goal_stats,
+        improved_system_stats,
         manual_goals,
         scoreboard_analyzer,
     )
@@ -576,7 +605,7 @@ def main(
             print("❌ No bucket name provided. Disabling upload.")
             uploader = None
 
-    # Export consolidated statistics to exactly two CSV files
+    # Export team statistics with simplified two-column format
     video_name = Path(input_video_path).stem
     team_csv_path, player_csv_path = export_consolidated_goal_statistics(
         video_name,
@@ -763,9 +792,20 @@ def process_video_memory_efficient(
 
     # Initialize Enhanced Goal Detection System for better accuracy
     from src.goal_detection.enhanced_goal_detector import EnhancedGoalDetector
+    from src.goal_detection.improved_goal_system import ImprovedGoalDetectionSystem
 
     enhanced_goal_detector = EnhancedGoalDetector(field_keypoints_detector)
+    improved_goal_system = ImprovedGoalDetectionSystem(field_keypoints_detector)
     print("✅ Enhanced goal detection system initialized for improved accuracy")
+    print("✅ Improved goal detection system initialized for maximum accuracy")
+
+    # Initialize Comprehensive Goal Detection System with CSV output
+    comprehensive_goal_integrator = create_goal_detection_integrator(
+        field_keypoints_model_path="data/models/best_field_keypoint.pt",
+        output_dir="data/output",
+        device=device,
+    )
+    print("✅ Comprehensive goal detection system initialized with CSV output")
 
     # Configure optimization for memory-efficient processing
     # Use larger intervals for very large videos to reduce computational load
@@ -778,11 +818,18 @@ def process_video_memory_efficient(
     scoreboard_analyzer = None
     if enable_scoreboard_detection:
         print("🎯 Initializing scoreboard detection system...")
+        total_frames = video_info.get("total_frames", None) if video_info else None
         scoreboard_analyzer = ScoreboardAnalyzer(
             detection_interval=30,  # Analyze every 30 frames for efficiency
             min_detection_confidence=0.6,
             min_extraction_confidence=0.6,
+            total_frames=total_frames,
+            analyze_last_percent=20.0,  # Focus on last 20% of video
         )
+        if total_frames:
+            print(
+                f"🎯 Scoreboard detection will analyze last 20% of video (frames {int(total_frames * 0.8)}-{total_frames})"
+            )
     else:
         print("⚠️  Scoreboard detection disabled")
 
@@ -864,6 +911,8 @@ def process_video_memory_efficient(
         spaces_bucket,
         spaces_folder_prefix,
         enhanced_goal_detector,  # Use enhanced goal detector for better accuracy
+        improved_goal_system,  # Use improved goal system for maximum accuracy
+        comprehensive_goal_integrator,  # Use comprehensive goal detector for CSV output
     )
 
     return tracks, team_ball_control, camera_movement_per_frame
@@ -1111,6 +1160,8 @@ def process_team_assignment_and_ball_tracking(
     spaces_bucket=None,
     spaces_folder_prefix="football_analysis",
     improved_goal_detector=None,
+    improved_goal_system=None,
+    comprehensive_goal_integrator=None,
 ):
     """Process team assignment and ball tracking in batches."""
     import time
@@ -1255,6 +1306,12 @@ def process_team_assignment_and_ball_tracking(
     print("🎯 Processing game events with ultra-fast sampling...")
     event_start_time = time.time()
 
+    # Initialize comprehensive goal detection for CSV output
+    if comprehensive_goal_integrator:
+        video_name = Path(input_video_path).stem
+        comprehensive_goal_integrator.start_video_processing(video_name)
+        print("✅ Comprehensive goal detection initialized for CSV output")
+
     # Balanced sampling for accuracy vs speed
     if total_frames > 5000:
         # For large videos, sample every 3rd frame for better accuracy
@@ -1348,6 +1405,49 @@ def process_team_assignment_and_ball_tracking(
                         ball_source=ball_source,
                     )
 
+                # Use improved goal system for maximum accuracy
+                if improved_goal_system:
+                    improved_goal_event = improved_goal_system.detect_goal(
+                        ball_position,
+                        assigned_player,
+                        current_team,
+                        frame_num,
+                        ball_confidence=ball_confidence,
+                        ball_source=ball_source,
+                    )
+
+                # Use comprehensive goal detection for CSV output
+                if comprehensive_goal_integrator:
+                    # Prepare player detections from current frame
+                    player_detections = []
+                    for track_id, player_data in player_track.items():
+                        if isinstance(player_data, dict) and "bbox" in player_data:
+                            player_detections.append(
+                                {
+                                    "player_id": track_id,
+                                    "team": player_data.get("team"),
+                                    "bbox": player_data["bbox"],
+                                    "confidence": 0.8,  # Default confidence for tracked players
+                                }
+                            )
+
+                    # Process frame for comprehensive goal detection
+                    comprehensive_goal_integrator.process_frame_with_detections(
+                        frame_num=frame_num,
+                        frame=None,  # Frame not needed for this processing mode
+                        ball_detections=(
+                            [
+                                {
+                                    "position": ball_position,
+                                    "confidence": ball_confidence or 0.5,
+                                }
+                            ]
+                            if ball_position
+                            else []
+                        ),
+                        player_detections=player_detections,
+                    )
+
             # Also use simplified goal detection as backup
             if ball_position:
                 pass_counter.detect_goal(
@@ -1415,9 +1515,11 @@ def process_team_assignment_and_ball_tracking(
     # Process final statistics and export CSV files
     team_ball_control = np.array(team_ball_control)
 
-    # Get enhanced goal statistics from both systems
+    # Get enhanced goal statistics from all systems
     enhanced_goal_stats = goal_detector.get_goal_statistics()
     improved_goal_stats = None
+    improved_system_stats = None
+
     if improved_goal_detector:
         improved_goal_stats = improved_goal_detector.get_goal_statistics()
         print(
@@ -1426,13 +1528,22 @@ def process_team_assignment_and_ball_tracking(
         print(f"   Team 1: {improved_goal_stats['team_goals'].get(1, 0)} goals")
         print(f"   Team 2: {improved_goal_stats['team_goals'].get(2, 0)} goals")
 
-    # Calculate final goal statistics using fusion approach for maximum accuracy
-    from src.utils.goal_utils import calculate_final_goal_stats_fusion
+    if improved_goal_system:
+        improved_system_stats = improved_goal_system.get_goal_statistics()
+        print(
+            f"🎯 Improved goal system found {improved_system_stats['total_goals']} goals"
+        )
+        print(f"   Team 1: {improved_system_stats['team_goals'].get(1, 0)} goals")
+        print(f"   Team 2: {improved_system_stats['team_goals'].get(2, 0)} goals")
 
-    final_team_goals, final_player_goals = calculate_final_goal_stats_fusion(
+    # Calculate final goal statistics using improved fusion approach for maximum accuracy
+    from src.utils.goal_utils import calculate_final_goal_stats_fusion_improved
+
+    final_team_goals, final_player_goals = calculate_final_goal_stats_fusion_improved(
         pass_counter,
         enhanced_goal_stats,
         improved_goal_stats,
+        improved_system_stats,
         manual_goals,
         scoreboard_analyzer,
     )
@@ -1440,7 +1551,7 @@ def process_team_assignment_and_ball_tracking(
     # Update goal detector with final counts for consistency
     goal_detector.set_final_goal_counts(final_team_goals, final_player_goals)
 
-    # Export consolidated statistics to exactly two CSV files
+    # Export team statistics with simplified two-column format
     video_name = Path(input_video_path).stem
     team_csv_path, player_csv_path = export_consolidated_goal_statistics(
         video_name,
@@ -1457,6 +1568,27 @@ def process_team_assignment_and_ball_tracking(
 
     print(f"📊 Team statistics saved to: {team_csv_path}")
     print(f"📊 Player statistics saved to: {player_csv_path}")
+
+    # Generate comprehensive goal detection CSV files
+    if comprehensive_goal_integrator:
+        try:
+            frame_csv_path, scoreboard_csv_path = (
+                comprehensive_goal_integrator.finalize_video_processing()
+            )
+            print(f"🎯 Goal detection frame-by-frame CSV saved to: {frame_csv_path}")
+            print(f"🎯 Goal detection scoreboard CSV saved to: {scoreboard_csv_path}")
+
+            # Get and display comprehensive goal detection statistics
+            goal_stats = comprehensive_goal_integrator.get_statistics()
+            print(f"🎯 Comprehensive goal detection summary:")
+            print(
+                f"   Total goals detected: {goal_stats.get('total_goals_detected', 0)}"
+            )
+            print(f"   Frames processed: {goal_stats.get('frames_processed', 0)}")
+            print(f"   Team goals: {goal_stats.get('team_goals', {})}")
+
+        except Exception as e:
+            print(f"⚠️  Error generating comprehensive goal detection CSV files: {e}")
 
     return team_ball_control
 

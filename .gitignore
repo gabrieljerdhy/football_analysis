@@ -5,12 +5,14 @@ __pycache__/
 
 # C extensions
 *.so
+.augment-guidelines
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
 
 # Virtual environments
 venv/
+football-env/
 env/
 ENV/
 .venv/

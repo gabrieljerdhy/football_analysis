@@ -40,7 +40,9 @@ def test_enhanced_goal_detection():
     try:
         # 1. Test Field Keypoints Detector
         print("\n1️⃣ Testing Field Keypoints Detector...")
-        keypoints_detector = FieldKeypointsDetector("../data/models/best_keypoint.pt")
+        keypoints_detector = FieldKeypointsDetector(
+            "data/models/best_field_keypoint.pt"
+        )
 
         # Create test frame
         test_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -235,7 +237,7 @@ def test_integration_with_main():
 
         # Test initialization as done in main.py
         field_keypoints_detector = FieldKeypointsDetector(
-            "../data/models/best_keypoint.pt"
+            "data/models/best_field_keypoint.pt"
         )
         goal_detector = GoalDetector(field_keypoints_detector)
         print("   ✓ Components initialized as in main.py")

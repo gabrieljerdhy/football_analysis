@@ -148,6 +148,11 @@ class FieldKeypointsDetector:
         self.six_yard_areas = {"left": None, "right": None}
         self.goal_lines = {"left": None, "right": None}
 
+        # Video dimensions for fallback calculations
+        self.video_width = None
+        self.video_height = None
+        self.fallback_areas_initialized = False
+
     def detect_keypoints(self, frame, force_detection=False):
         """
         Optimized field keypoints detection with caching and interval-based processing.
@@ -160,6 +165,10 @@ class FieldKeypointsDetector:
             dict: Dictionary of detected keypoints with their positions
         """
         self.frame_count += 1
+
+        # Initialize video dimensions and fallback areas if not done
+        if not self.fallback_areas_initialized:
+            self._initialize_fallback_areas(frame)
 
         # Check if we should perform detection based on optimization strategy
         should_detect = (
@@ -177,6 +186,61 @@ class FieldKeypointsDetector:
             detected_keypoints = self.detected_keypoints.copy()
 
         return detected_keypoints
+
+    def _initialize_fallback_areas(self, frame):
+        """
+        Initialize fallback goal areas based on video dimensions when keypoint detection fails.
+        """
+        self.video_height, self.video_width = frame.shape[:2]
+
+        # Enhanced fallback goal area calculation based on football field standards
+        # Goals are typically positioned at the edges with specific proportions
+
+        # Goal dimensions as percentage of video dimensions
+        goal_width_ratio = 0.12  # Increased from 0.08 to be more inclusive
+        goal_height_ratio = 0.45  # Increased from 0.35 to be more inclusive
+
+        goal_width = int(self.video_width * goal_width_ratio)
+        goal_height = int(self.video_height * goal_height_ratio)
+        goal_y_center = self.video_height // 2
+
+        # Add some margin for better detection
+        margin_x = 20
+        margin_y = 30
+
+        # Left goal area (more generous boundaries)
+        self.goal_areas["left"] = {
+            "x_min": 0,
+            "x_max": goal_width + margin_x,
+            "y_min": goal_y_center - goal_height // 2 - margin_y,
+            "y_max": goal_y_center + goal_height // 2 + margin_y,
+            "keypoints_used": [],
+            "confidence": 0.5,  # Medium confidence for fallback
+            "source": "fallback",
+        }
+
+        # Right goal area (more generous boundaries)
+        self.goal_areas["right"] = {
+            "x_min": self.video_width - goal_width - margin_x,
+            "x_max": self.video_width,
+            "y_min": goal_y_center - goal_height // 2 - margin_y,
+            "y_max": goal_y_center + goal_height // 2 + margin_y,
+            "keypoints_used": [],
+            "confidence": 0.5,  # Medium confidence for fallback
+            "source": "fallback",
+        }
+
+        self.fallback_areas_initialized = True
+
+        print(
+            f"📐 Initialized fallback goal areas for {self.video_width}x{self.video_height} video:"
+        )
+        print(
+            f"   Left goal: x={self.goal_areas['left']['x_min']}-{self.goal_areas['left']['x_max']}, y={self.goal_areas['left']['y_min']}-{self.goal_areas['left']['y_max']}"
+        )
+        print(
+            f"   Right goal: x={self.goal_areas['right']['x_min']}-{self.goal_areas['right']['x_max']}, y={self.goal_areas['right']['y_min']}-{self.goal_areas['right']['y_max']}"
+        )
 
     def _perform_keypoint_detection(self, frame):
         """
@@ -315,8 +379,12 @@ class FieldKeypointsDetector:
 
     def _update_goal_areas(self):
         """
-        Update goal area boundaries based on detected keypoints with enhanced logic.
+        Update goal area boundaries based on detected keypoints with enhanced logic and fallback support.
         """
+        # Store original fallback areas in case keypoint detection fails
+        original_left_area = self.goal_areas.get("left")
+        original_right_area = self.goal_areas.get("right")
+
         # Left goal area - prioritize six-yard box, then goal posts
         left_goal_points = []
 
@@ -444,6 +512,13 @@ class FieldKeypointsDetector:
                 )
                 / max(1, len(keypoints_used)),
             }
+
+        # Preserve fallback areas if keypoint detection failed
+        if self.goal_areas["left"] is None and original_left_area is not None:
+            self.goal_areas["left"] = original_left_area
+
+        if self.goal_areas["right"] is None and original_right_area is not None:
+            self.goal_areas["right"] = original_right_area
 
     def _update_penalty_areas(self):
         """

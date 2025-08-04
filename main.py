@@ -11,10 +11,14 @@ import cv2
 import numpy as np
 
 from src.camera_movement_estimator import CameraMovementEstimator
+from src.dribble_detection import DribbleAnalyzer
 from src.goal_detection import FieldKeypointsDetector, GoalDetector
 from src.goal_detection.goal_detection_integration import (
     create_goal_detection_integrator,
 )
+from src.pass_counter.challenge_detector import ChallengeDetector
+from src.pass_counter.enhanced_pass_counter import EnhancedPassCounter
+from src.pass_counter.enhanced_tackle_counter import EnhancedTackleCounter
 
 # from src.models.unified_model_adapter import create_unified_adapter  # Temporarily disabled
 from src.pass_counter.pass_counter import PassCounter
@@ -28,13 +32,21 @@ from src.scoreboard_detection import ScoreboardAnalyzer
 from src.speed_and_distance_estimator import SpeedAndDistance_Estimator
 from src.team_assigner import TeamAssigner
 from src.trackers import Tracker
-from src.utils import read_video, save_video
+from src.utils import (
+    MultiStorageHandler,
+    S3VideoHandler,
+    is_object_storage_uri,
+    is_s3_uri,
+    read_video,
+    save_video,
+)
 from src.utils.goal_utils import (
     calculate_final_goal_stats,
     export_consolidated_goal_statistics,
     export_simplified_goal_statistics,
     load_manual_goals,
 )
+from src.utils.logging_utils import create_analysis_logger, set_global_logger
 from src.view_transformer import ViewTransformer
 
 # Global flag for graceful shutdown
@@ -77,6 +89,13 @@ def main(
     use_enhanced_stats=False,
     enable_trajectory_analysis=False,
     device=None,
+    s3_handler=None,
+    storage_handler=None,
+    aws_access_key_id=None,
+    aws_secret_access_key=None,
+    aws_region=None,
+    aws_profile=None,
+    **storage_auth_kwargs,
 ):
     """
     Process a football video to track players, detect passes, and analyze the game.
@@ -97,6 +116,39 @@ def main(
     """
     print("🚀 Starting Football Analysis Pipeline...")
 
+    # Initialize comprehensive logging system
+    try:
+        analysis_logger = create_analysis_logger(
+            input_video_path=input_video_path,
+            output_dir="data/output",
+            match_name=Path(input_video_path).stem,
+            enable_console=False,  # Disable console to avoid duplicate output
+        )
+        set_global_logger(analysis_logger)
+
+        # Log analysis configuration
+        config = {
+            "input_video_path": input_video_path,
+            "output_video_path": output_video_path,
+            "use_stubs": use_stubs,
+            "force_regenerate": force_regenerate,
+            "goals_config": goals_config,
+            "enable_camera_movement": enable_camera_movement,
+            "enable_speed_distance": enable_speed_distance,
+            "enable_scoreboard_detection": enable_scoreboard_detection,
+            "memory_efficient": memory_efficient,
+            "batch_size": batch_size,
+            "memory_limit": memory_limit,
+            "use_enhanced_stats": use_enhanced_stats,
+            "enable_trajectory_analysis": enable_trajectory_analysis,
+            "device": str(device) if device else "auto",
+        }
+        analysis_logger.set_configuration(config)
+
+    except Exception as e:
+        print(f"⚠️  Warning: Failed to initialize logging system: {e}")
+        analysis_logger = None
+
     # Configure device for GPU acceleration
     from src.utils import (
         configure_device_environment,
@@ -107,6 +159,10 @@ def main(
     selected_device = get_optimal_device(device, verbose=True)
     print_device_info(selected_device)
     configure_device_environment(selected_device)
+
+    # Log device information
+    if analysis_logger:
+        analysis_logger.log_performance_metric("selected_device", str(selected_device))
 
     # Create output directories if they don't exist
     os.makedirs("data/output", exist_ok=True)
@@ -129,20 +185,39 @@ def main(
     print(f"Processing video: {input_video_path}")
     print(f"Output will be saved to: {output_video_path}")
 
+    # Log video information and paths
+    if analysis_logger:
+        analysis_logger.set_input_video(input_video_path)
+        analysis_logger.analysis_context["output_video_path"] = output_video_path
+        analysis_logger.analysis_context["tracks_stub_path"] = tracks_stub_path
+
     # Check if we should use memory-efficient processing
     if memory_efficient:
         print("🚀 MEMORY-EFFICIENT FOOTBALL VIDEO ANALYSIS")
         print("=" * 60)
 
+        if analysis_logger:
+            analysis_logger.start_stage(
+                "memory_efficient_initialization",
+                "Setting up memory-efficient processing",
+            )
+
         from src.utils import (
+            S3VideoHandler,
             VideoFrameIterator,
             cleanup_memory,
             get_video_info,
+            is_s3_uri,
             monitor_memory_usage,
         )
 
         # Get video information and check memory requirements
-        video_info = get_video_info(input_video_path)
+        video_info = get_video_info(
+            input_video_path,
+            s3_handler=s3_handler,
+            storage_handler=storage_handler,
+            **storage_auth_kwargs,
+        )
         estimated_memory_gb = (
             video_info["width"] * video_info["height"] * 3 * video_info["total_frames"]
         ) / (1024**3)
@@ -160,6 +235,17 @@ def main(
             f"🧮 Estimated memory per batch ({batch_size} frames): {estimated_batch_memory:.2f} GB"
         )
         print(f"💾 Current memory usage: {monitor_memory_usage():.2f} GB")
+
+        # Log video metadata and memory estimates
+        if analysis_logger:
+            analysis_logger.set_input_video(input_video_path, video_info)
+            analysis_logger.log_performance_metric(
+                "estimated_total_memory_gb", estimated_memory_gb
+            )
+            analysis_logger.log_performance_metric(
+                "estimated_batch_memory_gb", estimated_batch_memory
+            )
+            analysis_logger.log_memory_usage(monitor_memory_usage(), "initialization")
 
         # Auto-adjust batch size if needed (use 50% of available memory as safety margin)
         if estimated_batch_memory > memory_limit * 0.5:
@@ -207,6 +293,12 @@ def main(
                 uploader = None
 
         # Process using memory-efficient approach
+        if analysis_logger:
+            analysis_logger.end_stage("memory_efficient_initialization")
+            analysis_logger.start_stage(
+                "memory_efficient_processing", "Running memory-efficient video analysis"
+            )
+
         tracks, team_ball_control, camera_movement_per_frame = (
             process_video_memory_efficient(
                 input_video_path=input_video_path,
@@ -223,8 +315,14 @@ def main(
                 spaces_bucket=spaces_bucket,
                 spaces_folder_prefix=spaces_folder_prefix,
                 device=selected_device,
+                s3_handler=s3_handler,
+                storage_handler=storage_handler,
+                storage_auth_kwargs=storage_auth_kwargs,
             )
         )
+
+        if analysis_logger:
+            analysis_logger.end_stage("memory_efficient_processing")
 
         # Generate output video in memory-efficient way
         print("\n🎬 Generating output video...")
@@ -238,6 +336,9 @@ def main(
             enable_speed_distance=enable_speed_distance,
             batch_size=batch_size,
             device=selected_device,
+            s3_handler=s3_handler,
+            storage_handler=storage_handler,
+            storage_auth_kwargs=storage_auth_kwargs,
         )
 
         # Upload video to DigitalOcean Spaces if requested and uploader is available
@@ -261,14 +362,44 @@ def main(
         print(f"✅ Memory-efficient processing completed!")
         print(f"🎬 Output video saved to: {output_video_path}")
         print(f"💾 Final memory usage: {monitor_memory_usage():.2f} GB")
+
+        # Finalize logging for memory-efficient processing
+        if analysis_logger:
+            analysis_logger.log_memory_usage(monitor_memory_usage(), "completion")
+            analysis_logger.log_output_files({"output_video": output_video_path})
+            analysis_logger.finalize_analysis(
+                {
+                    "processing_mode": "memory_efficient",
+                    "total_frames": video_info.get("total_frames", 0),
+                    "final_memory_usage_gb": monitor_memory_usage(),
+                }
+            )
         return
 
     # Original approach - Read all video frames into memory
     print("⚠️  Using original approach - loading all frames into memory")
-    video_frames = read_video(input_video_path)
+
+    if analysis_logger:
+        analysis_logger.start_stage(
+            "video_loading", "Loading all video frames into memory"
+        )
+        analysis_logger.log_warning(
+            "Using memory-intensive approach - loading all frames"
+        )
+
+    video_frames = read_video(input_video_path, s3_handler=s3_handler, **s3_auth_kwargs)
     print(f"Loaded {len(video_frames)} frames")
 
+    if analysis_logger:
+        analysis_logger.log_performance_metric("total_frames_loaded", len(video_frames))
+        analysis_logger.end_stage("video_loading", {"frames_loaded": len(video_frames)})
+
     # Initialize Tracker with enhanced ball detection and jersey number detection
+    if analysis_logger:
+        analysis_logger.start_stage(
+            "tracker_initialization", "Initializing object tracking system"
+        )
+
     tracker = Tracker(
         "data/models/best_player_detect.pt",
         enable_jersey_detection=True,
@@ -277,7 +408,22 @@ def main(
         device=selected_device,
     )
 
+    if analysis_logger:
+        analysis_logger.end_stage(
+            "tracker_initialization",
+            {
+                "jersey_detection_enabled": True,
+                "enhanced_ball_detection_enabled": True,
+                "device": str(selected_device),
+            },
+        )
+
     # Initialize Enhanced Goal Detection System
+    if analysis_logger:
+        analysis_logger.start_stage(
+            "goal_detection_initialization", "Setting up goal detection systems"
+        )
+
     field_keypoints_detector = FieldKeypointsDetector(
         "data/models/best_field_keypoint.pt", device=selected_device
     )
@@ -291,6 +437,15 @@ def main(
     improved_goal_system = ImprovedGoalDetectionSystem(field_keypoints_detector)
     print("✅ Enhanced goal detection system initialized for improved accuracy")
     print("✅ Improved goal detection system initialized for maximum accuracy")
+
+    if analysis_logger:
+        analysis_logger.end_stage(
+            "goal_detection_initialization",
+            {
+                "systems_initialized": ["basic", "enhanced", "improved"],
+                "field_keypoints_model": "data/models/best_field_keypoint.pt",
+            },
+        )
 
     # Configure optimization for better performance
     goal_detector.set_keypoint_optimization(
@@ -322,15 +477,49 @@ def main(
         use_stubs and os.path.exists(tracks_stub_path) and not force_regenerate
     )
 
+    if analysis_logger:
+        analysis_logger.start_stage(
+            "object_tracking", "Tracking players, referees, and ball"
+        )
+        if read_tracks_from_stub:
+            analysis_logger.logger.info(
+                f"📂 Loading tracks from stub: {tracks_stub_path}"
+            )
+
     tracks = tracker.get_object_tracks(
         video_frames, read_from_stub=read_tracks_from_stub, stub_path=tracks_stub_path
     )
 
+    if analysis_logger:
+        analysis_logger.end_stage(
+            "object_tracking",
+            {
+                "total_frames": len(tracks.get("players", [])),
+                "used_stub": read_tracks_from_stub,
+            },
+        )
+
     # Get object positions
+    if analysis_logger:
+        analysis_logger.start_stage(
+            "position_calculation", "Calculating object positions"
+        )
+
     tracker.add_position_to_tracks(tracks)
 
+    if analysis_logger:
+        analysis_logger.end_stage("position_calculation")
+
     # Add jersey numbers to tracks using OCR
+    if analysis_logger:
+        analysis_logger.start_stage(
+            "jersey_detection", "Detecting player jersey numbers"
+        )
+
     tracker.add_jersey_numbers_to_tracks(tracks, video_frames, frame_sampling=5)
+
+    if analysis_logger:
+        analysis_logger.end_stage("jersey_detection", {"frame_sampling": 5})
 
     # Camera movement estimator (optional - disabled by default for memory optimization)
     if enable_camera_movement:
@@ -404,12 +593,27 @@ def main(
                 team_assigner.team_colors[team]
             )
 
-    # Initialize pass counter with video dimensions
+    # Initialize enhanced pass counter with cross detection
     video_height, video_width = video_frames[0].shape[:2]
-    pass_counter = PassCounter(video_width=video_width, video_height=video_height)
+    pass_counter = EnhancedPassCounter(
+        video_width=video_width, video_height=video_height, frame_rate=24.0
+    )
 
-    # Initialize tackle counter
-    tackle_counter = TackleCounter()
+    # Set field keypoints detector for cross detection
+    pass_counter.set_field_keypoints_detector(field_keypoints_detector)
+
+    # Initialize enhanced tackle counter for better confidence tracking
+    tackle_counter = EnhancedTackleCounter(frame_rate=24.0)
+
+    # Initialize challenge detector
+    print("🥊 Initializing challenge detection system...")
+    challenge_detector = ChallengeDetector(frame_rate=24.0)
+
+    # Initialize dribble analyzer
+    print("🏃 Initializing dribble detection system...")
+    dribble_analyzer = DribbleAnalyzer(
+        min_dribble_distance=30.0, min_dribble_duration=10, confidence_threshold=0.4
+    )
 
     # Initialize enhanced statistics manager if enabled
     enhanced_stats_manager = None
@@ -434,7 +638,18 @@ def main(
     team_ball_control = []
 
     # Process each frame
+    if analysis_logger:
+        analysis_logger.start_stage(
+            "frame_processing",
+            "Processing frames for ball assignment and event detection",
+        )
+        total_frames = len(tracks["players"])
+        analysis_logger.log_performance_metric("total_frames_to_process", total_frames)
+
     for frame_num, player_track in enumerate(tracks["players"]):
+        # Log progress periodically
+        if analysis_logger and frame_num % 1000 == 0:
+            analysis_logger.log_frame_processing(frame_num, len(tracks["players"]))
         ball_bbox = tracks["ball"][frame_num][1]["bbox"]
         ball_position = tracks["ball"][frame_num][1].get("position", None)
         assigned_player = player_assigner.assign_ball_to_player(player_track, ball_bbox)
@@ -444,8 +659,15 @@ def main(
             tracks["players"][frame_num][assigned_player]["has_ball"] = True
             team_ball_control.append(current_team)
 
-            # Count passes with improved accuracy, passing frame number
-            pass_counter.count_passes(assigned_player, current_team, frame_num)
+            # Count passes and detect crosses with enhanced accuracy
+            ball_data = (
+                tracks["ball"][frame_num].get(1, {})
+                if frame_num < len(tracks["ball"])
+                else {}
+            )
+            pass_counter.count_passes_enhanced(
+                assigned_player, current_team, frame_num, ball_data
+            )
 
             # Enhanced goal detection using field keypoints and multiple methods
             if ball_position:
@@ -453,6 +675,9 @@ def main(
                 goal_detector.update_keypoints(video_frames[frame_num])
                 enhanced_goal_detector.update_keypoints(video_frames[frame_num])
                 improved_goal_system.update_keypoints(video_frames[frame_num])
+
+                # Update cross detector keypoints
+                pass_counter.cross_detector.update_keypoints(video_frames[frame_num])
 
                 # Get enhanced ball information from tracks
                 ball_info = tracks["ball"][frame_num].get(1, {})
@@ -498,12 +723,41 @@ def main(
             tackle_counter.detect_tackles_and_interceptions(
                 player_track, assigned_player, current_team, frame_num
             )
+
+            # Detect challenges
+            ball_data = (
+                tracks["ball"][frame_num].get(1, {})
+                if frame_num < len(tracks["ball"])
+                else {}
+            )
+            challenge_detector.detect_challenge(
+                player_track, assigned_player, current_team, frame_num, ball_data
+            )
+
+            # Detect dribbles
+            dribble_event = dribble_analyzer.analyze_frame(
+                frame_num, player_track, ball_position, assigned_player, current_team
+            )
+            if dribble_event:
+                print(
+                    f"🏃 Dribble detected: Player {dribble_event.player_id}, Team {dribble_event.team}, Confidence {dribble_event.confidence:.3f}"
+                )
         else:
             # No player has the ball, pass -1 to indicate this
             # Use None for team to avoid KeyError
-            pass_counter.count_passes(-1, None, frame_num)
-            tackle_counter.detect_tackles_and_interceptions(
-                player_track, -1, None, frame_num
+            ball_data = (
+                tracks["ball"][frame_num].get(1, {})
+                if frame_num < len(tracks["ball"])
+                else {}
+            )
+            pass_counter.count_passes_enhanced(-1, None, frame_num, ball_data)
+            tackle_counter.detect_tackles_and_interceptions_enhanced(
+                player_track, -1, None, frame_num, ball_data
+            )
+
+            # Detect challenges even when no player has the ball
+            challenge_detector.detect_challenge(
+                player_track, -1, None, frame_num, ball_data
             )
 
             # Still check for goals even if no player has the ball
@@ -517,7 +771,21 @@ def main(
 
     team_ball_control = np.array(team_ball_control)
 
+    if analysis_logger:
+        analysis_logger.end_stage(
+            "frame_processing",
+            {
+                "frames_processed": len(tracks["players"]),
+                "team_ball_control_frames": len(team_ball_control),
+            },
+        )
+
     # Get enhanced goal statistics from all systems
+    if analysis_logger:
+        analysis_logger.start_stage(
+            "goal_statistics_calculation", "Calculating final goal statistics"
+        )
+
     enhanced_goal_stats = goal_detector.get_goal_statistics()
     improved_goal_stats = enhanced_goal_detector.get_goal_statistics()
     improved_system_stats = improved_goal_system.get_goal_statistics()
@@ -536,6 +804,15 @@ def main(
 
     # Update goal detector with final counts for consistency
     goal_detector.set_final_goal_counts(final_team_goals, final_player_goals)
+
+    if analysis_logger:
+        analysis_logger.end_stage(
+            "goal_statistics_calculation",
+            {
+                "final_team_goals": final_team_goals,
+                "total_player_goals": len(final_player_goals),
+            },
+        )
 
     # Run enhanced statistics analysis if enabled
     enhanced_analysis_results = None
@@ -606,6 +883,11 @@ def main(
             uploader = None
 
     # Export team statistics with simplified two-column format
+    if analysis_logger:
+        analysis_logger.start_stage(
+            "statistics_export", "Exporting team and player statistics"
+        )
+
     video_name = Path(input_video_path).stem
     team_csv_path, player_csv_path = export_consolidated_goal_statistics(
         video_name,
@@ -618,7 +900,16 @@ def main(
         uploader=uploader,
         bucket_name=spaces_bucket,
         upload_folder_prefix=spaces_folder_prefix,
+        tracker=tracker,
+        dribble_analyzer=dribble_analyzer,
+        challenge_detector=challenge_detector,
     )
+
+    if analysis_logger:
+        analysis_logger.end_stage(
+            "statistics_export",
+            {"team_csv_path": team_csv_path, "player_csv_path": player_csv_path},
+        )
 
     # Convert final player goals to simple count dictionary for compatibility
     final_player_goal_counts = {
@@ -741,6 +1032,43 @@ def main(
 
     print(f"\n📈 ANALYSIS COMPLETE - Check CSV files for detailed statistics")
 
+    # Finalize comprehensive logging
+    if analysis_logger:
+        # Log final team statistics
+        team_stats = {
+            "team_1": {
+                "goals": final_team_goals[1],
+                "passes": pass_counter.team_passes.get(1, 0),
+            },
+            "team_2": {
+                "goals": final_team_goals[2],
+                "passes": pass_counter.team_passes.get(2, 0),
+            },
+        }
+        analysis_logger.log_team_statistics(team_stats)
+
+        # Log output files
+        output_files = {
+            "output_video": output_video_path,
+            "team_statistics_csv": team_csv_path,
+            "player_statistics_csv": player_csv_path,
+        }
+        analysis_logger.log_output_files(output_files)
+
+        # Log final results
+        final_results = {
+            "processing_mode": "standard",
+            "total_frames_processed": len(video_frames),
+            "team_1_goals": final_team_goals[1],
+            "team_2_goals": final_team_goals[2],
+            "total_players_scored": len(final_player_goals),
+            "average_goal_confidence": enhanced_goal_stats.get("average_confidence", 0),
+            "detection_accuracy": enhanced_goal_stats.get("detection_accuracy", 0),
+        }
+
+        # Finalize analysis
+        analysis_logger.finalize_analysis(final_results)
+
 
 def process_video_memory_efficient(
     input_video_path,
@@ -757,6 +1085,9 @@ def process_video_memory_efficient(
     spaces_bucket=None,
     spaces_folder_prefix="football_analysis",
     device=None,
+    s3_handler=None,
+    storage_handler=None,
+    storage_auth_kwargs=None,
 ):
     """
     Memory-efficient video processing that processes frames in batches.
@@ -764,9 +1095,13 @@ def process_video_memory_efficient(
     from src.utils import (
         VideoFrameIterator,
         cleanup_memory,
+        get_analysis_logger,
         monitor_memory_usage,
         save_video_streaming,
     )
+
+    # Get the global logger instance
+    analysis_logger = get_analysis_logger()
 
     # Generate stub paths based on input video name
     video_name = Path(input_video_path).stem
@@ -774,6 +1109,12 @@ def process_video_memory_efficient(
     camera_movement_stub_path = f"data/stubs/{video_name}_camera_movement.pkl"
 
     print("\n🔧 Initializing components...")
+
+    if analysis_logger:
+        analysis_logger.start_stage(
+            "memory_efficient_components",
+            "Initializing components for memory-efficient processing",
+        )
 
     # Initialize Tracker with enhanced ball detection and optimized jersey detection
     tracker = Tracker(
@@ -850,7 +1191,14 @@ def process_video_memory_efficient(
     else:
         print("🔍 Processing object tracking in batches...")
         tracks = process_tracking_in_batches(
-            input_video_path, tracker, batch_size, tracks_stub_path, video_info
+            input_video_path,
+            tracker,
+            batch_size,
+            tracks_stub_path,
+            video_info,
+            s3_handler,
+            storage_handler,
+            storage_auth_kwargs,
         )
 
     # Get object positions
@@ -858,7 +1206,15 @@ def process_video_memory_efficient(
 
     # Add jersey numbers to tracks using OCR (process in batches)
     print("🔢 Adding jersey numbers...")
-    add_jersey_numbers_in_batches(input_video_path, tracker, tracks, batch_size)
+    add_jersey_numbers_in_batches(
+        input_video_path,
+        tracker,
+        tracks,
+        batch_size,
+        s3_handler,
+        storage_handler,
+        storage_auth_kwargs,
+    )
 
     # Camera movement estimation (optional)
     camera_movement_per_frame = []
@@ -871,6 +1227,9 @@ def process_video_memory_efficient(
             use_stubs,
             force_regenerate,
             video_info,
+            s3_handler,
+            storage_handler,
+            storage_auth_kwargs,
         )
 
         # Apply camera movement adjustments
@@ -913,13 +1272,21 @@ def process_video_memory_efficient(
         enhanced_goal_detector,  # Use enhanced goal detector for better accuracy
         improved_goal_system,  # Use improved goal system for maximum accuracy
         comprehensive_goal_integrator,  # Use comprehensive goal detector for CSV output
+        field_keypoints_detector,  # Add field keypoints detector for cross detection
     )
 
     return tracks, team_ball_control, camera_movement_per_frame
 
 
 def process_tracking_in_batches(
-    input_video_path, tracker, batch_size, stub_path, video_info
+    input_video_path,
+    tracker,
+    batch_size,
+    stub_path,
+    video_info,
+    s3_handler=None,
+    storage_handler=None,
+    storage_auth_kwargs=None,
 ):
     """Process object tracking in batches to avoid memory issues."""
     from src.utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
@@ -929,7 +1296,16 @@ def process_tracking_in_batches(
     all_tracks = {"players": [], "referees": [], "ball": []}
     frames_processed = 0
 
-    with VideoFrameIterator(input_video_path, batch_size) as frame_iterator:
+    # Prepare storage auth kwargs for VideoFrameIterator
+    storage_kwargs = storage_auth_kwargs or {}
+
+    with VideoFrameIterator(
+        input_video_path,
+        batch_size,
+        s3_handler=s3_handler,
+        storage_handler=storage_handler,
+        **storage_kwargs,
+    ) as frame_iterator:
         for batch_frames in frame_iterator:
             print(
                 f"🔄 Processing frames {frames_processed}-{frames_processed + len(batch_frames)}"
@@ -964,7 +1340,9 @@ def process_tracking_in_batches(
     return all_tracks
 
 
-def add_jersey_numbers_in_batches(input_video_path, tracker, tracks, batch_size):
+def add_jersey_numbers_in_batches(
+    input_video_path, tracker, tracks, batch_size, s3_handler=None, s3_auth_kwargs=None
+):
     """Add jersey numbers to tracks using optimized sampling and caching."""
     import time
 
@@ -973,11 +1351,32 @@ def add_jersey_numbers_in_batches(input_video_path, tracker, tracks, batch_size)
     print(f"🔢 Adding jersey numbers with optimized processing...")
 
     if not tracker.enable_jersey_detection or tracker.jersey_detector is None:
-        # Add placeholder jersey numbers (track_id as jersey number)
+        # Add valid jersey numbers (1-99) instead of using track_id directly
+        print("🔢 Generating valid jersey numbers for players...")
+
+        # Collect all unique track IDs
+        all_track_ids = set()
+        for player_track in tracks["players"]:
+            all_track_ids.update(player_track.keys())
+
+        # Generate valid jersey numbers for all players
+        used_numbers = set()
+        track_to_jersey = {}
+
+        for track_id in sorted(all_track_ids):  # Sort for consistency
+            valid_number = tracker._generate_valid_jersey_number(track_id, used_numbers)
+            track_to_jersey[track_id] = valid_number
+            used_numbers.add(valid_number)
+
+        # Apply jersey numbers to all frames
         for frame_num, player_track in enumerate(tracks["players"]):
             for track_id, track_info in player_track.items():
-                track_info["jersey_number"] = track_id
-        print("✅ Jersey numbers added (using track IDs as placeholders)")
+                track_info["jersey_number"] = track_to_jersey[track_id]
+
+        print(f"✅ Valid jersey numbers assigned to {len(all_track_ids)} players")
+
+        # Validate all jersey numbers are in valid range
+        tracker._validate_and_fix_jersey_numbers(tracks)
         return
 
     start_time = time.time()
@@ -999,7 +1398,12 @@ def add_jersey_numbers_in_batches(input_video_path, tracker, tracks, batch_size)
     confirmed_players = 0
     max_frames_to_process = min(30, total_frames // 100)  # Cap at 30 frames max
 
-    with VideoFrameIterator(input_video_path, batch_size) as frame_iterator:
+    # Prepare S3 auth kwargs for VideoFrameIterator
+    s3_kwargs = s3_auth_kwargs or {}
+
+    with VideoFrameIterator(
+        input_video_path, batch_size, s3_handler=s3_handler, **s3_kwargs
+    ) as frame_iterator:
         frame_num = 0
 
         for batch_frames in frame_iterator:
@@ -1070,6 +1474,9 @@ def add_jersey_numbers_in_batches(input_video_path, tracker, tracks, batch_size)
     # Propagate detected jersey numbers to all frames
     tracker._propagate_jersey_numbers(tracks)
 
+    # Final validation of all jersey numbers
+    tracker._validate_and_fix_jersey_numbers(tracks)
+
     # Print performance stats
     elapsed_time = time.time() - start_time
     stats = tracker.jersey_detector.get_detection_stats()
@@ -1087,7 +1494,14 @@ def add_jersey_numbers_in_batches(input_video_path, tracker, tracks, batch_size)
 
 
 def process_camera_movement_in_batches(
-    input_video_path, batch_size, stub_path, use_stubs, force_regenerate, video_info
+    input_video_path,
+    batch_size,
+    stub_path,
+    use_stubs,
+    force_regenerate,
+    video_info,
+    s3_handler=None,
+    s3_auth_kwargs=None,
 ):
     """Process camera movement estimation in batches."""
     from src.utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
@@ -1116,7 +1530,12 @@ def process_camera_movement_in_batches(
     all_camera_movement = []
     frames_processed = 0
 
-    with VideoFrameIterator(input_video_path, batch_size) as frame_iterator:
+    # Prepare S3 auth kwargs for VideoFrameIterator
+    s3_kwargs = s3_auth_kwargs or {}
+
+    with VideoFrameIterator(
+        input_video_path, batch_size, s3_handler=s3_handler, **s3_kwargs
+    ) as frame_iterator:
         for batch_frames in frame_iterator:
             print(
                 f"🎥 Processing camera movement for frames {frames_processed}-{frames_processed + len(batch_frames)}"
@@ -1162,6 +1581,7 @@ def process_team_assignment_and_ball_tracking(
     improved_goal_detector=None,
     improved_goal_system=None,
     comprehensive_goal_integrator=None,
+    field_keypoints_detector=None,
 ):
     """Process team assignment and ball tracking in batches."""
     import time
@@ -1257,8 +1677,24 @@ def process_team_assignment_and_ball_tracking(
     video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
 
-    pass_counter = PassCounter(video_width=video_width, video_height=video_height)
-    tackle_counter = TackleCounter()
+    pass_counter = EnhancedPassCounter(
+        video_width=video_width, video_height=video_height, frame_rate=24.0
+    )
+
+    # Set field keypoints detector for cross detection
+    if field_keypoints_detector:
+        pass_counter.set_field_keypoints_detector(field_keypoints_detector)
+
+    # Initialize enhanced tackle counter for better confidence tracking
+    tackle_counter = EnhancedTackleCounter(frame_rate=24.0)
+
+    # Initialize challenge detector
+    challenge_detector = ChallengeDetector(frame_rate=24.0)
+
+    # Initialize dribble analyzer
+    dribble_analyzer = DribbleAnalyzer(
+        min_dribble_distance=30.0, min_dribble_duration=10, confidence_threshold=0.4
+    )
 
     total_frames = len(tracks["players"])
 
@@ -1370,9 +1806,26 @@ def process_team_assignment_and_ball_tracking(
             player_track[assigned_player]["has_ball"] = True
 
             # Process events on sampled frames with better accuracy
-            pass_counter.count_passes(assigned_player, current_team, frame_num)
-            tackle_counter.detect_tackles_and_interceptions(
-                player_track, assigned_player, current_team, frame_num
+            ball_data = (
+                tracks["ball"][frame_num].get(1, {})
+                if frame_num < len(tracks["ball"])
+                else {}
+            )
+            pass_counter.count_passes_enhanced(
+                assigned_player, current_team, frame_num, ball_data
+            )
+            tackle_counter.detect_tackles_and_interceptions_enhanced(
+                player_track, assigned_player, current_team, frame_num, ball_data
+            )
+
+            # Detect challenges
+            challenge_detector.detect_challenge(
+                player_track, assigned_player, current_team, frame_num, ball_data
+            )
+
+            # Detect dribbles
+            dribble_event = dribble_analyzer.analyze_frame(
+                frame_num, player_track, ball_position, assigned_player, current_team
             )
 
             # PERFORMANCE OPTIMIZATION: Skip video frame reading completely for speed
@@ -1448,16 +1901,23 @@ def process_team_assignment_and_ball_tracking(
                         player_detections=player_detections,
                     )
 
-            # Also use simplified goal detection as backup
-            if ball_position:
-                pass_counter.detect_goal(
-                    ball_position, assigned_player, current_team, frame_num
-                )
+            # Goal detection is handled by the enhanced goal detection systems above
+            # No need for additional goal detection here
         else:
             # No player has the ball - minimal processing
-            pass_counter.count_passes(-1, None, frame_num)
-            tackle_counter.detect_tackles_and_interceptions(
-                player_track, -1, None, frame_num
+            ball_data = (
+                tracks["ball"][frame_num].get(1, {})
+                if frame_num < len(tracks["ball"])
+                else {}
+            )
+            pass_counter.count_passes_enhanced(-1, None, frame_num, ball_data)
+            tackle_counter.detect_tackles_and_interceptions_enhanced(
+                player_track, -1, None, frame_num, ball_data
+            )
+
+            # Detect challenges even when no player has the ball
+            challenge_detector.detect_challenge(
+                player_track, -1, None, frame_num, ball_data
             )
 
         # OPTIMIZED: Less frequent progress updates to reduce console overhead
@@ -1564,6 +2024,9 @@ def process_team_assignment_and_ball_tracking(
         uploader=uploader,
         bucket_name=spaces_bucket,
         upload_folder_prefix=spaces_folder_prefix,
+        tracker=None,  # Tracker not available in memory-efficient mode
+        dribble_analyzer=dribble_analyzer,
+        challenge_detector=challenge_detector,
     )
 
     print(f"📊 Team statistics saved to: {team_csv_path}")
@@ -1603,6 +2066,8 @@ def generate_output_video_memory_efficient(
     enable_speed_distance,
     batch_size,
     device=None,
+    s3_handler=None,
+    s3_auth_kwargs=None,
 ):
     """Generate output video with annotations in a memory-efficient way."""
     from src.utils import VideoFrameIterator, cleanup_memory, monitor_memory_usage
@@ -1640,8 +2105,10 @@ def generate_output_video_memory_efficient(
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
 
-    # Initialize pass counter for drawing with video dimensions
-    pass_counter = PassCounter(video_width=width, video_height=height)
+    # Initialize enhanced pass counter for drawing with video dimensions
+    pass_counter = EnhancedPassCounter(
+        video_width=width, video_height=height, frame_rate=24.0
+    )
 
     fourcc = cv2.VideoWriter_fourcc(*"XVID")
     out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
@@ -1649,7 +2116,12 @@ def generate_output_video_memory_efficient(
     frame_num = 0
     total_frames = len(tracks["players"])
 
-    with VideoFrameIterator(input_video_path, batch_size) as frame_iterator:
+    # Prepare S3 auth kwargs for VideoFrameIterator
+    s3_kwargs = s3_auth_kwargs or {}
+
+    with VideoFrameIterator(
+        input_video_path, batch_size, s3_handler=s3_handler, **s3_kwargs
+    ) as frame_iterator:
         for batch_frames in frame_iterator:
             print(
                 f"🎬 Processing output frames {frame_num}-{frame_num + len(batch_frames)}"
@@ -1939,6 +2411,108 @@ if __name__ == "__main__":
         help="Device to run models on (auto, cpu, cuda, cuda:0, etc.). Default: auto-detect best available device",
     )
 
+    # S3 authentication arguments
+    parser.add_argument(
+        "--aws-access-key-id",
+        type=str,
+        default=None,
+        help="AWS access key ID for S3 authentication (optional, will use env vars or profile)",
+    )
+    parser.add_argument(
+        "--aws-secret-access-key",
+        type=str,
+        default=None,
+        help="AWS secret access key for S3 authentication (optional, will use env vars or profile)",
+    )
+    parser.add_argument(
+        "--aws-region",
+        type=str,
+        default=None,
+        help="AWS region for S3 access (optional, defaults to us-east-1)",
+    )
+    parser.add_argument(
+        "--aws-profile",
+        type=str,
+        default=None,
+        help="AWS profile name for S3 authentication (optional)",
+    )
+
+    # DigitalOcean Spaces arguments (for video input)
+    parser.add_argument(
+        "--spaces-access-key-id-input",
+        type=str,
+        default=None,
+        help="DigitalOcean Spaces access key ID for video input (optional)",
+    )
+    parser.add_argument(
+        "--spaces-secret-access-key-input",
+        type=str,
+        default=None,
+        help="DigitalOcean Spaces secret access key for video input (optional)",
+    )
+    parser.add_argument(
+        "--spaces-region-input",
+        type=str,
+        default=None,
+        help="DigitalOcean Spaces region for video input (optional)",
+    )
+
+    # Google Cloud Storage arguments
+    parser.add_argument(
+        "--gcs-service-account-path",
+        type=str,
+        default=None,
+        help="Path to Google Cloud service account JSON file (optional)",
+    )
+
+    # Azure Blob Storage arguments
+    parser.add_argument(
+        "--azure-account-name",
+        type=str,
+        default=None,
+        help="Azure storage account name (optional)",
+    )
+    parser.add_argument(
+        "--azure-account-key",
+        type=str,
+        default=None,
+        help="Azure storage account key (optional)",
+    )
+    parser.add_argument(
+        "--azure-sas-token",
+        type=str,
+        default=None,
+        help="Azure SAS token (optional)",
+    )
+
+    # MinIO arguments
+    parser.add_argument(
+        "--minio-endpoint",
+        type=str,
+        default=None,
+        help="MinIO endpoint URL (optional)",
+    )
+    parser.add_argument(
+        "--minio-access-key",
+        type=str,
+        default=None,
+        help="MinIO access key (optional)",
+    )
+    parser.add_argument(
+        "--minio-secret-key",
+        type=str,
+        default=None,
+        help="MinIO secret key (optional)",
+    )
+
+    # Generic S3-compatible storage arguments
+    parser.add_argument(
+        "--s3-endpoint",
+        type=str,
+        default=None,
+        help="Custom S3-compatible endpoint URL (optional)",
+    )
+
     args = parser.parse_args()
 
     # Create goals template if requested
@@ -1954,12 +2528,123 @@ if __name__ == "__main__":
             "the --input argument is required unless --create-goals-template is used"
         )
 
+    # Create storage handler for object storage URIs
+    storage_handler = None
+    s3_handler = None  # Keep for backward compatibility
+
+    if is_object_storage_uri(args.input):
+        print(f"🌐 Detected object storage URI input: {args.input}")
+
+        # Prepare storage configuration
+        storage_config = {
+            # AWS S3 configuration
+            "aws_access_key_id": args.aws_access_key_id,
+            "aws_secret_access_key": args.aws_secret_access_key,
+            "aws_region": args.aws_region,
+            "aws_profile": args.aws_profile,
+            # DigitalOcean Spaces configuration
+            "spaces_access_key_id": args.spaces_access_key_id_input,
+            "spaces_secret_access_key": args.spaces_secret_access_key_input,
+            "region": args.spaces_region_input,
+            # Google Cloud Storage configuration
+            "gcs_service_account_path": args.gcs_service_account_path,
+            # Azure Blob Storage configuration
+            "azure_account_name": args.azure_account_name,
+            "azure_account_key": args.azure_account_key,
+            "azure_sas_token": args.azure_sas_token,
+            # MinIO configuration
+            "minio_endpoint": args.minio_endpoint,
+            "minio_access_key": args.minio_access_key,
+            "minio_secret_key": args.minio_secret_key,
+            # Custom S3-compatible endpoint
+            "endpoint": args.s3_endpoint,
+        }
+
+        try:
+            storage_handler = MultiStorageHandler(**storage_config)
+
+            # For backward compatibility, also create S3 handler if it's an S3 URI
+            if is_s3_uri(args.input):
+                s3_handler = S3VideoHandler(
+                    aws_access_key_id=args.aws_access_key_id,
+                    aws_secret_access_key=args.aws_secret_access_key,
+                    region_name=args.aws_region,
+                    profile_name=args.aws_profile,
+                )
+
+            print("✅ Multi-storage handler created successfully")
+
+        except Exception as e:
+            print(f"❌ Error creating storage handler: {e}")
+            print("\n💡 TROUBLESHOOTING TIPS:")
+            print("1. For AWS S3:")
+            print(
+                "   - Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables"
+            )
+            print(
+                "   - Or use: --aws-access-key-id YOUR_KEY --aws-secret-access-key YOUR_SECRET"
+            )
+            print("2. For DigitalOcean Spaces:")
+            print(
+                "   - Set DO_SPACES_ACCESS_KEY_ID and DO_SPACES_SECRET_ACCESS_KEY environment variables"
+            )
+            print(
+                "   - Or use: --spaces-access-key-id-input YOUR_KEY --spaces-secret-access-key-input YOUR_SECRET"
+            )
+            print("3. For Google Cloud Storage:")
+            print("   - Set GOOGLE_APPLICATION_CREDENTIALS environment variable")
+            print(
+                "   - Or use: --gcs-service-account-path /path/to/service-account.json"
+            )
+            print("4. For Azure Blob Storage:")
+            print(
+                "   - Set AZURE_STORAGE_ACCOUNT and AZURE_STORAGE_KEY environment variables"
+            )
+            print("   - Or use: --azure-account-name NAME --azure-account-key KEY")
+            print("5. For MinIO:")
+            print(
+                "   - Set MINIO_ENDPOINT, MINIO_ACCESS_KEY, and MINIO_SECRET_KEY environment variables"
+            )
+            print(
+                "   - Or use: --minio-endpoint URL --minio-access-key KEY --minio-secret-key SECRET"
+            )
+            exit(1)
+
     # Check video info only if requested
     if args.check_video_info:
         from src.utils import get_video_info, monitor_memory_usage
 
         try:
-            video_info = get_video_info(args.input)
+            # Pass storage handler for object storage URIs
+            storage_auth_kwargs = {
+                # AWS S3 configuration
+                "aws_access_key_id": args.aws_access_key_id,
+                "aws_secret_access_key": args.aws_secret_access_key,
+                "aws_region": args.aws_region,
+                "aws_profile": args.aws_profile,
+                # DigitalOcean Spaces configuration
+                "spaces_access_key_id": args.spaces_access_key_id_input,
+                "spaces_secret_access_key": args.spaces_secret_access_key_input,
+                "region": args.spaces_region_input,
+                # Google Cloud Storage configuration
+                "gcs_service_account_path": args.gcs_service_account_path,
+                # Azure Blob Storage configuration
+                "azure_account_name": args.azure_account_name,
+                "azure_account_key": args.azure_account_key,
+                "azure_sas_token": args.azure_sas_token,
+                # MinIO configuration
+                "minio_endpoint": args.minio_endpoint,
+                "minio_access_key": args.minio_access_key,
+                "minio_secret_key": args.minio_secret_key,
+                # Custom S3-compatible endpoint
+                "endpoint": args.s3_endpoint,
+            }
+            video_info = get_video_info(
+                args.input,
+                s3_handler=s3_handler,
+                storage_handler=storage_handler,
+                **storage_auth_kwargs,
+            )
             print("📹 VIDEO INFORMATION")
             print("=" * 50)
             print(f"File: {args.input}")
@@ -2021,4 +2706,11 @@ if __name__ == "__main__":
         use_enhanced_stats=args.use_enhanced_stats,
         enable_trajectory_analysis=args.enable_trajectory_analysis,
         device=args.device,
+        s3_handler=s3_handler,
+        storage_handler=storage_handler,
+        aws_access_key_id=args.aws_access_key_id,
+        aws_secret_access_key=args.aws_secret_access_key,
+        aws_region=args.aws_region,
+        aws_profile=args.aws_profile,
+        **storage_auth_kwargs,
     )

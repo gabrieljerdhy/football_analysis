@@ -11,7 +11,7 @@ This project uses state-of-the-art AI models to analyze football videos and extr
 - **Player Detection & Tracking**: YOLO-based object detection with jersey number recognition
 - **Team Assignment**: K-means clustering for team identification based on jersey colors
 - **Goal Detection**: Advanced trajectory analysis with field keypoint detection
-- **Performance Analytics**: Pass counting, tackle detection, and comprehensive statistics
+- **Performance Analytics**: Pass counting, cross detection, tackle detection, and comprehensive statistics
 - **Memory Optimization**: Efficient processing for videos of any length (tested up to 2+ hours)
 - **Cloud Storage**: Automatic upload to DigitalOcean Spaces
 
@@ -131,6 +131,10 @@ graph TD
 # Install Python dependencies
 pip install -r requirements.txt
 
+# Optional: Install additional dependencies for specific storage providers
+pip install google-cloud-storage      # For Google Cloud Storage support
+pip install azure-storage-blob        # For Azure Blob Storage support
+
 # Download required models (place in data/models/)
 # - best_player_detect.pt (YOLO player detection model)
 # - best_ball_latest.pt (Enhanced ball detection model)
@@ -140,7 +144,7 @@ pip install -r requirements.txt
 ### Basic Usage
 
 ```bash
-# Simple analysis
+# Simple analysis with local video file
 python main.py --input data/input_videos/your_video.mp4
 
 # Memory-efficient processing for large videos
@@ -148,6 +152,17 @@ python main.py --input data/input_videos/large_video.mp4 --memory-efficient
 
 # Check video requirements first
 python main.py --input data/input_videos/your_video.mp4 --check-video-info
+
+# Object storage video input (NEW!)
+python main.py --input s3://your-bucket/path/to/video.mp4
+python main.py --input gs://your-bucket/path/to/video.mp4
+python main.py --input azure://account.blob.core.windows.net/container/video.mp4
+python main.py --input spaces://bucket.region.digitaloceanspaces.com/video.mp4
+python main.py --input minio://endpoint/bucket/video.mp4
+
+# With provider-specific credentials
+python main.py --input s3://your-bucket/video.mp4 \
+  --aws-access-key-id YOUR_KEY --aws-secret-access-key YOUR_SECRET
 ```
 
 ### SoccerNet Enhanced Analysis
@@ -170,7 +185,7 @@ python scripts/demo_soccernet_integration.py --demo-mode all
 ### Advanced Usage
 
 ```bash
-# Full analysis with all features
+# Full analysis with all features (local file)
 python main.py --input data/input_videos/match.mp4 \
   --memory-efficient \
   --enable-camera-movement \
@@ -178,10 +193,26 @@ python main.py --input data/input_videos/match.mp4 \
   --batch-size 30 \
   --upload-to-spaces
 
+# Full analysis with object storage input
+python main.py --input s3://your-bucket/match.mp4 \
+  --memory-efficient \
+  --enable-camera-movement \
+  --enable-speed-distance \
+  --aws-profile production
+
+python main.py --input gs://sports-videos/match.mp4 \
+  --memory-efficient \
+  --gcs-service-account-path /path/to/service-account.json
+
+python main.py --input azure://account.blob.core.windows.net/videos/match.mp4 \
+  --memory-efficient \
+  --azure-account-name myaccount \
+  --azure-account-key mykey
+
 # With manual goal configuration
 python main.py --create-goals-template goals.csv
 # Edit goals.csv, then:
-python main.py --input data/input_videos/match.mp4 --goals-config goals.csv
+python main.py --input s3://your-bucket/match.mp4 --goals-config goals.csv
 ```
 
 ## 📊 Output Files
@@ -201,13 +232,45 @@ The system generates comprehensive analysis results:
 - **Team Statistics**: `data/output/{video_name}_team_stats.csv`
 
   - Passes, goals, tackles, interceptions per team
+  - Cross statistics (attempted, successful, accuracy)
   - Ball possession percentages
   - Goal detection confidence scores
 
 - **Player Statistics**: `data/output/{video_name}_player_stats.csv`
   - Individual player performance metrics
+  - Cross statistics per player
   - Jersey number mapping
   - Speed and distance data (if enabled)
+
+### Cross Detection Features
+
+The system includes advanced cross detection capabilities:
+
+#### Cross Types Detected
+
+- **Wing Crosses**: From wide positions (25% from sidelines)
+- **Byline Crosses**: From near the goal line (15% from sidelines)
+- **High Crosses**: Arc-like trajectories with significant height
+- **Low Crosses**: Ground-level or low-height crosses
+- **Cutbacks**: Crosses with significant direction changes
+- **Pullbacks**: Backward crosses from advanced positions
+
+#### Detection Criteria
+
+- **Origin Zones**: Left/right wing, byline, and half-space areas
+- **Target Areas**: Penalty box, six-yard box, near/far post
+- **Trajectory Analysis**: Arc curvature, height estimation, velocity patterns
+- **Field Position**: Integration with field keypoints detection
+- **Success Metrics**: Based on target area and receiver detection
+
+#### Cross Statistics Output
+
+- `crosses_attempted`: Total cross attempts
+- `crosses_successful`: Successful crosses (reached target area)
+- `cross_accuracy_percentage`: Success rate
+- `wing_crosses`, `byline_crosses`: Breakdown by origin type
+- `high_crosses`, `low_crosses`: Breakdown by trajectory type
+- `penalty_box_crosses`: Crosses targeting penalty area
 
 ### Cached Data
 
@@ -224,6 +287,105 @@ The system generates comprehensive analysis results:
 | 8GB        | `--batch-size 50 --memory-limit 6.0`   |
 | 16GB       | `--batch-size 100 --memory-limit 12.0` |
 | 32GB+      | `--batch-size 200 --memory-limit 24.0` |
+
+### Multi-Provider Object Storage Setup (NEW!)
+
+The system now supports multiple object storage providers as video input sources:
+
+- **AWS S3**: `s3://bucket/path/to/video.mp4`
+- **Google Cloud Storage**: `gs://bucket/path/to/video.mp4`
+- **Azure Blob Storage**: `azure://account.blob.core.windows.net/container/path/to/video.mp4`
+- **DigitalOcean Spaces**: `spaces://bucket.region.digitaloceanspaces.com/path/to/video.mp4`
+- **MinIO**: `minio://endpoint/bucket/path/to/video.mp4`
+
+#### AWS S3 Configuration
+
+#### Method 1: Environment Variables
+
+```bash
+export AWS_ACCESS_KEY_ID=your_access_key_id
+export AWS_SECRET_ACCESS_KEY=your_secret_access_key
+export AWS_DEFAULT_REGION=us-east-1
+```
+
+#### Method 2: AWS CLI Configuration
+
+```bash
+aws configure
+# Follow prompts to enter credentials
+```
+
+#### Method 3: Command Line Arguments
+
+```bash
+python main.py --input s3://bucket/video.mp4 \
+  --aws-access-key-id YOUR_KEY \
+  --aws-secret-access-key YOUR_SECRET \
+  --aws-region us-west-2
+```
+
+#### Method 4: AWS Profile
+
+```bash
+python main.py --input s3://bucket/video.mp4 --aws-profile my-profile
+```
+
+#### Google Cloud Storage Configuration
+
+```bash
+# Method 1: Service Account Key File
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+
+# Method 2: Command Line Argument
+python main.py --input gs://bucket/video.mp4 \
+  --gcs-service-account-path /path/to/service-account.json
+```
+
+#### Azure Blob Storage Configuration
+
+```bash
+# Method 1: Environment Variables
+export AZURE_STORAGE_ACCOUNT=your_account_name
+export AZURE_STORAGE_KEY=your_account_key
+
+# Method 2: Command Line Arguments
+python main.py --input azure://account.blob.core.windows.net/container/video.mp4 \
+  --azure-account-name your_account \
+  --azure-account-key your_key
+
+# Method 3: SAS Token
+python main.py --input azure://account.blob.core.windows.net/container/video.mp4 \
+  --azure-sas-token your_sas_token
+```
+
+#### DigitalOcean Spaces Configuration
+
+```bash
+# Method 1: Environment Variables
+export DO_SPACES_ACCESS_KEY_ID=your_access_key
+export DO_SPACES_SECRET_ACCESS_KEY=your_secret_key
+
+# Method 2: Command Line Arguments
+python main.py --input spaces://bucket.region.digitaloceanspaces.com/video.mp4 \
+  --spaces-access-key-id-input your_key \
+  --spaces-secret-access-key-input your_secret \
+  --spaces-region-input nyc3
+```
+
+#### MinIO Configuration
+
+```bash
+# Method 1: Environment Variables
+export MINIO_ENDPOINT=http://minio.example.com
+export MINIO_ACCESS_KEY=your_access_key
+export MINIO_SECRET_KEY=your_secret_key
+
+# Method 2: Command Line Arguments
+python main.py --input minio://minio.example.com/bucket/video.mp4 \
+  --minio-endpoint http://minio.example.com \
+  --minio-access-key your_key \
+  --minio-secret-key your_secret
+```
 
 ### Cloud Storage Setup
 
@@ -247,6 +409,9 @@ python tests/test_jersey_detection.py
 # Test goal detection
 python tests/test_goal_detection.py
 
+# Test cross detection
+python tests/test_cross_detection.py
+
 # Test memory optimization
 python tests/test_memory_optimization.py
 ```
@@ -265,7 +430,7 @@ python scripts/timed_analysis.py --input data/input_videos/test.mp4
 
 ### Core Options
 
-- `--input, -i`: Input video file (required)
+- `--input, -i`: Input video file or object storage URI (required)
 - `--output, -o`: Output video file (optional)
 - `--memory-efficient`: Enable memory-efficient processing
 - `--check-video-info`: Check video requirements without processing
@@ -280,6 +445,41 @@ python scripts/timed_analysis.py --input data/input_videos/test.mp4
 - `--enable-camera-movement`: Enable camera movement estimation
 - `--enable-speed-distance`: Enable speed and distance calculation
 - `--goals-config`: Path to manual goals CSV file
+
+### Object Storage Input Options (NEW!)
+
+#### AWS S3 Options
+
+- `--aws-access-key-id`: AWS access key ID for S3 authentication
+- `--aws-secret-access-key`: AWS secret access key for S3 authentication
+- `--aws-region`: AWS region for S3 access (default: us-east-1)
+- `--aws-profile`: AWS profile name for credential management
+
+#### Google Cloud Storage Options
+
+- `--gcs-service-account-path`: Path to Google Cloud service account JSON file
+
+#### Azure Blob Storage Options
+
+- `--azure-account-name`: Azure storage account name
+- `--azure-account-key`: Azure storage account key
+- `--azure-sas-token`: Azure SAS token
+
+#### DigitalOcean Spaces Options
+
+- `--spaces-access-key-id-input`: DigitalOcean Spaces access key ID for video input
+- `--spaces-secret-access-key-input`: DigitalOcean Spaces secret access key for video input
+- `--spaces-region-input`: DigitalOcean Spaces region for video input
+
+#### MinIO Options
+
+- `--minio-endpoint`: MinIO endpoint URL
+- `--minio-access-key`: MinIO access key
+- `--minio-secret-key`: MinIO secret key
+
+#### Generic S3-Compatible Options
+
+- `--s3-endpoint`: Custom S3-compatible endpoint URL
 
 ### Storage Options
 

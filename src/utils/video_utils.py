@@ -5,12 +5,22 @@ from typing import Generator, List, Optional, Tuple
 import cv2
 import psutil
 
+from .multi_storage_utils import MultiStorageHandler, is_object_storage_uri
+from .s3_video_utils import S3VideoHandler, is_s3_uri
+
 
 class VideoFrameIterator:
     """Memory-efficient video frame iterator for processing large videos."""
 
-    def __init__(self, video_path: str, batch_size: int = 50):
-        self.video_path = video_path
+    def __init__(
+        self,
+        video_path: str,
+        batch_size: int = 50,
+        s3_handler: Optional[S3VideoHandler] = None,
+        storage_handler: Optional[MultiStorageHandler] = None,
+        **storage_auth_kwargs,
+    ):
+        self.original_video_path = video_path
         self.batch_size = batch_size
         self.cap = None
         self.total_frames = 0
@@ -18,11 +28,54 @@ class VideoFrameIterator:
         self.fps = 30
         self.width = 0
         self.height = 0
+        self.s3_handler = s3_handler  # Keep for backward compatibility
+        self.storage_handler = storage_handler
+        self.storage_auth_kwargs = storage_auth_kwargs
+        self.local_video_path = None  # Will store local path for remote videos
 
     def __enter__(self):
-        self.cap = cv2.VideoCapture(self.video_path)
+        # Handle object storage URIs by downloading to local path first
+        if is_object_storage_uri(self.original_video_path):
+            print(f"🌐 Detected object storage URI: {self.original_video_path}")
+
+            # Use multi-storage handler if available, otherwise fall back to S3 handler
+            if self.storage_handler is not None:
+                self.local_video_path = self.storage_handler.download_video(
+                    self.original_video_path
+                )
+            elif is_s3_uri(self.original_video_path):
+                # Backward compatibility with S3 handler
+                if self.s3_handler is None:
+                    # Extract S3-specific kwargs for backward compatibility
+                    s3_kwargs = {
+                        k: v
+                        for k, v in self.storage_auth_kwargs.items()
+                        if k.startswith("aws_") or k in ["region_name", "profile_name"]
+                    }
+                    self.s3_handler = S3VideoHandler(**s3_kwargs)
+
+                self.local_video_path = self.s3_handler.get_local_path(
+                    self.original_video_path
+                )
+            else:
+                # Create multi-storage handler for non-S3 providers
+                self.storage_handler = MultiStorageHandler(**self.storage_auth_kwargs)
+                self.local_video_path = self.storage_handler.download_video(
+                    self.original_video_path
+                )
+
+            if self.local_video_path is None:
+                raise ValueError(
+                    f"Could not download video: {self.original_video_path}"
+                )
+
+            video_path = self.local_video_path
+        else:
+            video_path = self.original_video_path
+
+        self.cap = cv2.VideoCapture(video_path)
         if not self.cap.isOpened():
-            raise ValueError(f"Could not open video: {self.video_path}")
+            raise ValueError(f"Could not open video: {video_path}")
 
         # Get video properties
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -35,6 +88,10 @@ class VideoFrameIterator:
         )
         duration_minutes = (self.total_frames / self.fps) / 60
         print(f"⏱️  Duration: {duration_minutes:.1f} minutes")
+
+        if is_object_storage_uri(self.original_video_path):
+            print(f"🌐 Object Storage Source: {self.original_video_path}")
+            print(f"📁 Local Cache: {self.local_video_path}")
 
         return self
 
@@ -72,11 +129,47 @@ class VideoFrameIterator:
         )
 
 
-def read_video(video_path):
+def read_video(
+    video_path,
+    s3_handler: Optional[S3VideoHandler] = None,
+    storage_handler: Optional[MultiStorageHandler] = None,
+    **storage_auth_kwargs,
+):
     """Legacy function - loads all frames into memory. Use VideoFrameIterator for large videos."""
     print(
         "⚠️  WARNING: Loading all frames into memory. For large videos, use process_video_efficiently() instead."
     )
+
+    # Handle object storage URIs
+    if is_object_storage_uri(video_path):
+        print(f"🌐 Detected object storage URI: {video_path}")
+
+        # Use multi-storage handler if available, otherwise fall back to S3 handler
+        if storage_handler is not None:
+            local_path = storage_handler.download_video(video_path)
+        elif is_s3_uri(video_path) and s3_handler is not None:
+            # Backward compatibility with S3 handler
+            local_path = s3_handler.get_local_path(video_path)
+        else:
+            # Create appropriate handler
+            if is_s3_uri(video_path):
+                s3_kwargs = {
+                    k: v
+                    for k, v in storage_auth_kwargs.items()
+                    if k.startswith("aws_") or k in ["region_name", "profile_name"]
+                }
+                s3_handler = S3VideoHandler(**s3_kwargs)
+                local_path = s3_handler.get_local_path(video_path)
+            else:
+                storage_handler = MultiStorageHandler(**storage_auth_kwargs)
+                local_path = storage_handler.download_video(video_path)
+
+        if local_path is None:
+            raise ValueError(f"Could not download video: {video_path}")
+
+        video_path = local_path
+        print(f"📁 Using local cache: {video_path}")
+
     cap = cv2.VideoCapture(video_path)
     frames = []
     while True:
@@ -88,8 +181,44 @@ def read_video(video_path):
     return frames
 
 
-def get_video_info(video_path: str) -> dict:
+def get_video_info(
+    video_path: str,
+    s3_handler: Optional[S3VideoHandler] = None,
+    storage_handler: Optional[MultiStorageHandler] = None,
+    **storage_auth_kwargs,
+) -> dict:
     """Get video information without loading frames."""
+
+    # Handle object storage URIs
+    if is_object_storage_uri(video_path):
+        print(f"🌐 Getting info for object storage video: {video_path}")
+
+        # Use multi-storage handler if available, otherwise fall back to S3 handler
+        if storage_handler is not None:
+            local_path = storage_handler.download_video(video_path)
+        elif is_s3_uri(video_path) and s3_handler is not None:
+            # Backward compatibility with S3 handler
+            local_path = s3_handler.get_local_path(video_path)
+        else:
+            # Create appropriate handler
+            if is_s3_uri(video_path):
+                s3_kwargs = {
+                    k: v
+                    for k, v in storage_auth_kwargs.items()
+                    if k.startswith("aws_") or k in ["region_name", "profile_name"]
+                }
+                s3_handler = S3VideoHandler(**s3_kwargs)
+                local_path = s3_handler.get_local_path(video_path)
+            else:
+                storage_handler = MultiStorageHandler(**storage_auth_kwargs)
+                local_path = storage_handler.download_video(video_path)
+
+        if local_path is None:
+            raise ValueError(f"Could not download video: {video_path}")
+
+        video_path = local_path
+        print(f"📁 Using local cache: {video_path}")
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Could not open video: {video_path}")

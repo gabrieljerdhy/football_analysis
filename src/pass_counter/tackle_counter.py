@@ -76,8 +76,27 @@ class TackleCounter:
                     self.player_interceptions[ball_possessor] = {
                         "interceptions": 0,
                         "team": ball_team,
+                        "total_interception_confidence": 0.0,
+                        "avg_interception_confidence": 0.0,
                     }
+
+                # Calculate interception confidence
+                interception_confidence = self._calculate_interception_confidence(
+                    current_frame_players, ball_possessor
+                )
+
                 self.player_interceptions[ball_possessor]["interceptions"] += 1
+                self.player_interceptions[ball_possessor][
+                    "total_interception_confidence"
+                ] += interception_confidence
+                self.player_interceptions[ball_possessor][
+                    "avg_interception_confidence"
+                ] = (
+                    self.player_interceptions[ball_possessor][
+                        "total_interception_confidence"
+                    ]
+                    / self.player_interceptions[ball_possessor]["interceptions"]
+                )
 
                 print(
                     f"Interception by Team {ball_team}, Player {ball_possessor} at frame {frame_num}"
@@ -96,8 +115,23 @@ class TackleCounter:
                         self.player_tackles[ball_possessor] = {
                             "tackles": 0,
                             "team": ball_team,
+                            "total_tackle_confidence": 0.0,
+                            "avg_tackle_confidence": 0.0,
                         }
+
+                    # Calculate tackle confidence based on proximity
+                    tackle_confidence = self._calculate_tackle_confidence(
+                        current_frame_players, ball_possessor, self.last_ball_possessor
+                    )
+
                     self.player_tackles[ball_possessor]["tackles"] += 1
+                    self.player_tackles[ball_possessor][
+                        "total_tackle_confidence"
+                    ] += tackle_confidence
+                    self.player_tackles[ball_possessor]["avg_tackle_confidence"] = (
+                        self.player_tackles[ball_possessor]["total_tackle_confidence"]
+                        / self.player_tackles[ball_possessor]["tackles"]
+                    )
 
                     print(
                         f"Tackle by Team {ball_team}, Player {ball_possessor} at frame {frame_num}"
@@ -156,6 +190,92 @@ class TackleCounter:
         # If players are close enough, consider it a tackle
         return distance < self.tackle_distance_threshold
 
+    def _calculate_tackle_confidence(
+        self, current_frame_players, tackler_id, tackled_id
+    ):
+        """
+        Calculate confidence score for tackle detection based on player proximity and context.
+
+        Args:
+            current_frame_players (dict): Dictionary of player data for current frame
+            tackler_id (int): ID of player making the tackle
+            tackled_id (int): ID of player being tackled
+
+        Returns:
+            float: Confidence score (0.0 to 1.0)
+        """
+        # Base confidence
+        base_confidence = 0.6
+
+        # Check if both players exist and have position data
+        if (
+            tackler_id not in current_frame_players
+            or tackled_id not in current_frame_players
+            or "position" not in current_frame_players[tackler_id]
+            or "position" not in current_frame_players[tackled_id]
+        ):
+            return base_confidence * 0.5  # Lower confidence if missing data
+
+        # Calculate distance between players
+        tackler_pos = current_frame_players[tackler_id]["position"]
+        tackled_pos = current_frame_players[tackled_id]["position"]
+        distance = np.sqrt(
+            (tackler_pos[0] - tackled_pos[0]) ** 2
+            + (tackler_pos[1] - tackled_pos[1]) ** 2
+        )
+
+        # Distance factor: closer players = higher confidence
+        if distance <= self.tackle_distance_threshold * 0.5:
+            distance_factor = 1.0  # Very close
+        elif distance <= self.tackle_distance_threshold:
+            distance_factor = 0.8  # Close enough for tackle
+        else:
+            distance_factor = 0.4  # Far but still detected
+
+        # Possession stability factor: longer possession = higher confidence
+        possession_factor = min(1.0, self.possession_frames / 10.0)
+
+        # Combine factors
+        confidence = (
+            base_confidence * 0.5 + distance_factor * 0.3 + possession_factor * 0.2
+        )
+
+        return max(0.0, min(1.0, confidence))
+
+    def _calculate_interception_confidence(self, current_frame_players, interceptor_id):
+        """
+        Calculate confidence score for interception detection.
+
+        Args:
+            current_frame_players (dict): Dictionary of player data for current frame
+            interceptor_id (int): ID of player making the interception
+
+        Returns:
+            float: Confidence score (0.0 to 1.0)
+        """
+        # Base confidence for interceptions
+        base_confidence = 0.7
+
+        # Check if interceptor exists and has position data
+        if (
+            interceptor_id not in current_frame_players
+            or "position" not in current_frame_players[interceptor_id]
+        ):
+            return base_confidence * 0.5
+
+        # Team change factor: interceptions involve team changes
+        team_change_factor = 1.0  # Always true for interceptions
+
+        # Possession stability factor: longer previous possession = higher confidence
+        possession_factor = min(1.0, self.possession_frames / 8.0)
+
+        # Combine factors
+        confidence = (
+            base_confidence * 0.6 + team_change_factor * 0.2 + possession_factor * 0.2
+        )
+
+        return max(0.0, min(1.0, confidence))
+
     def export_tackle_stats_to_csv(self, output_path="data/output/tackle_stats.csv"):
         """
         Export tackle and interception statistics to a CSV file.
@@ -179,9 +299,14 @@ class TackleCounter:
                     "team": data.get("team", "Unknown"),
                     "tackles": data.get("tackles", 0),
                     "interceptions": 0,
+                    "avg_tackle_confidence": data.get("avg_tackle_confidence", 0.0),
+                    "avg_interception_confidence": 0.0,
                 }
             else:
                 player_stats[player_id]["tackles"] = data.get("tackles", 0)
+                player_stats[player_id]["avg_tackle_confidence"] = data.get(
+                    "avg_tackle_confidence", 0.0
+                )
                 player_stats[player_id]["team"] = data.get(
                     "team", player_stats[player_id]["team"]
                 )
@@ -193,9 +318,16 @@ class TackleCounter:
                     "team": data.get("team", "Unknown"),
                     "tackles": 0,
                     "interceptions": data.get("interceptions", 0),
+                    "avg_tackle_confidence": 0.0,
+                    "avg_interception_confidence": data.get(
+                        "avg_interception_confidence", 0.0
+                    ),
                 }
             else:
                 player_stats[player_id]["interceptions"] = data.get("interceptions", 0)
+                player_stats[player_id]["avg_interception_confidence"] = data.get(
+                    "avg_interception_confidence", 0.0
+                )
                 player_stats[player_id]["team"] = data.get(
                     "team", player_stats[player_id]["team"]
                 )
@@ -208,6 +340,8 @@ class TackleCounter:
                 "team",
                 "tackles",
                 "interceptions",
+                "avg_tackle_confidence",
+                "avg_interception_confidence",
             ]
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
@@ -216,10 +350,14 @@ class TackleCounter:
                 writer.writerow(
                     {
                         "player_id": player_id,
-                        "jersey_number": player_id,  # Using player_id as jersey number for now
+                        "jersey_number": player_id,  # TODO: Update to use actual detected jersey numbers
                         "team": data.get("team", "Unknown"),
                         "tackles": data.get("tackles", 0),
                         "interceptions": data.get("interceptions", 0),
+                        "avg_tackle_confidence": data.get("avg_tackle_confidence", 0.0),
+                        "avg_interception_confidence": data.get(
+                            "avg_interception_confidence", 0.0
+                        ),
                     }
                 )
 

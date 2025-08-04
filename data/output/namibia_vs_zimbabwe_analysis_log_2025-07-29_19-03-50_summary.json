@@ -1,0 +1,87 @@
+{
+  "analysis_info": {
+    "match_name": "namibia_vs_zimbabwe",
+    "start_time": "2025-07-29T19:03:50.967163",
+    "end_time": "2025-07-30T10:13:56.293921",
+    "total_duration_seconds": 54605.326357126236,
+    "log_file": "data/output/namibia_vs_zimbabwe_analysis_log_2025-07-29_19-03-50.log"
+  },
+  "performance_metrics": {
+    "total_frames_processed": 0,
+    "processing_speed_fps": 0.0,
+    "memory_usage_peak_gb": 4.3838348388671875,
+    "stages_completed": [
+      {
+        "name": "memory_efficient_initialization",
+        "duration_seconds": 0.0863332748413086
+      },
+      {
+        "name": "memory_efficient_processing",
+        "duration_seconds": 9.369850158691406e-05
+      },
+      {
+        "name": "memory_efficient_components",
+        "duration_seconds": 40732.11545753479
+      }
+    ],
+    "errors_encountered": 0,
+    "warnings_encountered": 0,
+    "selected_device": "cuda:0",
+    "estimated_total_memory_gb": 1291.3870811462402,
+    "estimated_batch_memory_gb": 0.14483928680419922
+  },
+  "analysis_context": {
+    "input_video_path": "data/input_videos/namibia_vs_zimbabwe.mp4",
+    "output_video_path": "data/output_videos/namibia_vs_zimbabwe_output.avi",
+    "video_metadata": {
+      "total_frames": 222900,
+      "fps": 30.0,
+      "width": 1920,
+      "height": 1080,
+      "duration_seconds": 7430.0
+    },
+    "configuration": {
+      "input_video_path": "data/input_videos/namibia_vs_zimbabwe.mp4",
+      "output_video_path": null,
+      "use_stubs": true,
+      "force_regenerate": true,
+      "goals_config": null,
+      "enable_camera_movement": false,
+      "enable_speed_distance": false,
+      "enable_scoreboard_detection": true,
+      "memory_efficient": true,
+      "batch_size": 25,
+      "memory_limit": 8.0,
+      "use_enhanced_stats": true,
+      "enable_trajectory_analysis": true,
+      "device": "cuda"
+    },
+    "team_statistics": {},
+    "final_results": {
+      "processing_mode": "memory_efficient",
+      "total_frames": 222900,
+      "final_memory_usage_gb": 4.3838348388671875
+    },
+    "tracks_stub_path": "data/stubs/namibia_vs_zimbabwe_tracks.pkl",
+    "output_files": {
+      "output_video": "data/output_videos/namibia_vs_zimbabwe_output.avi"
+    }
+  },
+  "stage_timings": {
+    "memory_efficient_initialization": {
+      "start": 1753815831.5604517,
+      "end": 1753815831.646785,
+      "duration": 0.0863332748413086
+    },
+    "memory_efficient_processing": {
+      "start": 1753815831.646846,
+      "end": 1753815831.6469398,
+      "duration": 9.369850158691406e-05
+    },
+    "memory_efficient_components": {
+      "start": 1753815831.6470108,
+      "end": 1753856563.7624683,
+      "duration": 40732.11545753479
+    }
+  }
+}

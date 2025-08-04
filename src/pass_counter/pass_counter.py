@@ -241,7 +241,7 @@ class PassCounter:
                 writer.writerow(
                     {
                         "player_id": player_id,
-                        "jersey_number": player_id,  # Using player_id as jersey number for now
+                        "jersey_number": player_id,  # TODO: Update to use actual detected jersey numbers
                         "team": data.get("team", "Unknown"),
                         "passes": data.get("passes", 0),
                     }
@@ -303,7 +303,7 @@ class PassCounter:
                 writer.writerow(
                     {
                         "player_id": player_id,
-                        "jersey_number": player_id,  # Using player_id as jersey number for now
+                        "jersey_number": player_id,  # TODO: Update to use actual detected jersey numbers
                         "team": data.get("team", "Unknown"),
                         "passes": data.get("passes", 0),
                         "goals": data.get("goals", 0),

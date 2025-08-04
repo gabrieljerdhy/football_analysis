@@ -147,7 +147,7 @@ class Tracker:
                 self.jersey_detector = JerseyNumberDetector(
                     confidence_threshold=0.4,
                     consensus_frames=3,
-                    valid_number_range=(1, 99),
+                    valid_number_range=(0, 99),
                 )
                 print("✅ Jersey number detection enabled")
             except Exception as e:
@@ -660,6 +660,90 @@ class Tracker:
 
         return tracks
 
+    def _generate_valid_jersey_number(self, track_id, used_numbers=None):
+        """
+        Generate a valid jersey number (1-99) for a player when detection fails.
+
+        Args:
+            track_id: Player tracking ID
+            used_numbers: Set of already used jersey numbers to avoid duplicates
+
+        Returns:
+            Valid jersey number between 1-99
+        """
+        if used_numbers is None:
+            used_numbers = set()
+
+        # Try to use a simple mapping first: track_id % 99 + 1
+        candidate = (track_id % 99) + 1
+
+        # If that number is already used, find the next available number
+        while candidate in used_numbers and candidate <= 99:
+            candidate += 1
+
+        # If we've exhausted 1-99, wrap around and find any available number
+        if candidate > 99:
+            for num in range(1, 100):
+                if num not in used_numbers:
+                    candidate = num
+                    break
+            else:
+                # If all numbers 1-99 are somehow used, just use track_id % 99 + 1
+                candidate = (track_id % 99) + 1
+
+        return candidate
+
+    def _validate_and_fix_jersey_numbers(self, tracks):
+        """
+        Validate all jersey numbers in tracks and fix any that are outside valid range.
+
+        Args:
+            tracks: Player tracking data to validate and fix
+        """
+        print("🔍 Validating jersey numbers...")
+
+        invalid_count = 0
+        fixed_count = 0
+        used_numbers = set()
+
+        # First pass: collect all valid jersey numbers
+        for player_track in tracks["players"]:
+            for track_info in player_track.values():
+                if "jersey_number" in track_info:
+                    jersey_num = track_info["jersey_number"]
+                    if 1 <= jersey_num <= 99:
+                        used_numbers.add(jersey_num)
+
+        # Second pass: fix invalid jersey numbers
+        track_id_to_fixed_jersey = {}
+
+        for frame_num, player_track in enumerate(tracks["players"]):
+            for track_id, track_info in player_track.items():
+                if "jersey_number" in track_info:
+                    jersey_num = track_info["jersey_number"]
+
+                    # Check if jersey number is invalid
+                    if not (1 <= jersey_num <= 99):
+                        invalid_count += 1
+
+                        # Generate or reuse a fixed jersey number for this track_id
+                        if track_id not in track_id_to_fixed_jersey:
+                            valid_number = self._generate_valid_jersey_number(
+                                track_id, used_numbers
+                            )
+                            track_id_to_fixed_jersey[track_id] = valid_number
+                            used_numbers.add(valid_number)
+                            fixed_count += 1
+
+                        # Apply the fixed jersey number
+                        track_info["jersey_number"] = track_id_to_fixed_jersey[track_id]
+
+        if invalid_count > 0:
+            print(f"⚠️ Found {invalid_count} invalid jersey numbers")
+            print(f"✅ Fixed {fixed_count} unique players with valid jersey numbers")
+        else:
+            print("✅ All jersey numbers are valid")
+
     def add_jersey_numbers_to_tracks(self, tracks, video_frames, frame_sampling=3):
         """
         Add jersey numbers to player tracks using OCR detection.
@@ -670,10 +754,16 @@ class Tracker:
             frame_sampling: Process every N frames for performance (default: 3)
         """
         if not self.enable_jersey_detection or self.jersey_detector is None:
-            # Add placeholder jersey numbers (track_id as jersey number)
+            # Add valid jersey numbers (1-99) instead of using track_id directly
+            used_numbers = set()
             for frame_num, player_track in enumerate(tracks["players"]):
                 for track_id, track_info in player_track.items():
-                    track_info["jersey_number"] = track_id
+                    if "jersey_number" not in track_info:
+                        valid_number = self._generate_valid_jersey_number(
+                            track_id, used_numbers
+                        )
+                        track_info["jersey_number"] = valid_number
+                        used_numbers.add(valid_number)
             return
 
         print("🔍 Detecting jersey numbers...")
@@ -695,7 +785,7 @@ class Tracker:
                     frame, bbox, track_id
                 )
 
-                # Store detected number or use track_id as fallback
+                # Store detected number or use valid fallback
                 if jersey_number is not None:
                     track_info["jersey_number"] = jersey_number
                 else:
@@ -703,9 +793,23 @@ class Tracker:
                     cached_number = self.jersey_detector.get_jersey_number_for_player(
                         track_id
                     )
-                    track_info["jersey_number"] = (
-                        cached_number if cached_number is not None else track_id
-                    )
+                    if cached_number is not None:
+                        track_info["jersey_number"] = cached_number
+                    else:
+                        # Generate a valid jersey number instead of using track_id
+                        if "jersey_number" not in track_info:
+                            # Collect already used numbers to avoid duplicates
+                            used_numbers = set()
+                            for existing_track in player_track.values():
+                                if "jersey_number" in existing_track:
+                                    existing_num = existing_track["jersey_number"]
+                                    if 1 <= existing_num <= 99:
+                                        used_numbers.add(existing_num)
+
+                            valid_number = self._generate_valid_jersey_number(
+                                track_id, used_numbers
+                            )
+                            track_info["jersey_number"] = valid_number
 
             processed_frames += 1
             if processed_frames % 10 == 0:
@@ -713,6 +817,9 @@ class Tracker:
 
         # Propagate detected jersey numbers to all frames
         self._propagate_jersey_numbers(tracks)
+
+        # Validate and fix any invalid jersey numbers
+        self._validate_and_fix_jersey_numbers(tracks)
 
         # Print enhanced detection statistics
         if self.jersey_detector:
@@ -758,13 +865,32 @@ class Tracker:
                 track_id
             ]
 
+        # Collect all unique track IDs to generate consistent fallback numbers
+        all_track_ids = set()
+        for player_track in tracks["players"]:
+            all_track_ids.update(player_track.keys())
+
+        # Generate valid fallback numbers for unconfirmed players
+        used_numbers = set(confirmed_numbers.values())
+        fallback_jerseys = {}
+
+        for track_id in all_track_ids:
+            if track_id not in confirmed_numbers:
+                valid_number = self._generate_valid_jersey_number(
+                    track_id, used_numbers
+                )
+                fallback_jerseys[track_id] = valid_number
+                used_numbers.add(valid_number)
+
         # Apply to all frames
         for frame_num, player_track in enumerate(tracks["players"]):
             for track_id, track_info in player_track.items():
                 if track_id in confirmed_numbers:
                     track_info["jersey_number"] = confirmed_numbers[track_id]
                 elif "jersey_number" not in track_info:
-                    track_info["jersey_number"] = track_id  # Fallback to track_id
+                    track_info["jersey_number"] = fallback_jerseys[
+                        track_id
+                    ]  # Use valid fallback
 
     def draw_ellipse(self, frame, bbox, color, track_id=None, jersey_number=None):
         y2 = int(bbox[3])
@@ -941,13 +1067,33 @@ class Tracker:
             f"🔄 Propagating {len(confirmed_jerseys)} confirmed jersey numbers to all frames..."
         )
 
-        # Apply confirmed jersey numbers to all frames
+        # Collect all unique track IDs to generate consistent fallback numbers
+        all_track_ids = set()
+        for player_track in tracks["players"]:
+            all_track_ids.update(player_track.keys())
+
+        # Generate valid fallback numbers for unconfirmed players
+        used_numbers = set(confirmed_jerseys.values())
+        fallback_jerseys = {}
+
+        for track_id in all_track_ids:
+            if track_id not in confirmed_jerseys:
+                valid_number = self._generate_valid_jersey_number(
+                    track_id, used_numbers
+                )
+                fallback_jerseys[track_id] = valid_number
+                used_numbers.add(valid_number)
+
+        # Apply confirmed and fallback jersey numbers to all frames
         for frame_num, player_track in enumerate(tracks["players"]):
             for track_id, track_info in player_track.items():
                 if track_id in confirmed_jerseys:
                     track_info["jersey_number"] = confirmed_jerseys[track_id]
                 else:
-                    # Use track_id as fallback for unconfirmed players
-                    track_info["jersey_number"] = track_id
+                    # Use valid fallback number instead of track_id
+                    track_info["jersey_number"] = fallback_jerseys[track_id]
 
         print(f"✅ Jersey numbers propagated to {len(tracks['players']):,} frames")
+        print(
+            f"📊 Confirmed: {len(confirmed_jerseys)}, Fallback: {len(fallback_jerseys)}"
+        )

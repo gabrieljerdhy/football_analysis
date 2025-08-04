@@ -1,0 +1,67 @@
+{
+  "analysis_info": {
+    "match_name": "Test Match",
+    "start_time": "2025-07-28T12:30:49.909459",
+    "end_time": "2025-07-28T12:30:49.910456",
+    "total_duration_seconds": 0.0007750988006591797,
+    "log_file": "data/output/Test Match_analysis_log_2025-07-28_12-30-49.log"
+  },
+  "performance_metrics": {
+    "total_frames_processed": 0,
+    "processing_speed_fps": 0.0,
+    "memory_usage_peak_gb": 3.2,
+    "stages_completed": [
+      {
+        "name": "test_stage",
+        "duration_seconds": 1.9788742065429688e-05
+      }
+    ],
+    "errors_encountered": 1,
+    "warnings_encountered": 1,
+    "test_metric": 42.5
+  },
+  "analysis_context": {
+    "input_video_path": "data/input_videos/test_match.mp4",
+    "output_video_path": null,
+    "video_metadata": {
+      "width": 1280,
+      "height": 720,
+      "total_frames": 3600,
+      "duration_seconds": 150.0,
+      "fps": 24.0
+    },
+    "configuration": {
+      "input_video_path": "data/input_videos/test_match.mp4",
+      "memory_efficient": true,
+      "batch_size": 50,
+      "enable_scoreboard_detection": true
+    },
+    "team_statistics": {
+      "team_1": {
+        "goals": 2,
+        "passes": 120
+      },
+      "team_2": {
+        "goals": 1,
+        "passes": 95
+      }
+    },
+    "final_results": {
+      "total_frames": 3600,
+      "goals_detected": 3,
+      "processing_time": 125.5
+    },
+    "output_files": {
+      "output_video": "test_output.avi",
+      "team_csv": "test_team_stats.csv",
+      "player_csv": "test_player_stats.csv"
+    }
+  },
+  "stage_timings": {
+    "test_stage": {
+      "start": 1753705849.9098446,
+      "end": 1753705849.9098644,
+      "duration": 1.9788742065429688e-05
+    }
+  }
+}

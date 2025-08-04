@@ -1,0 +1,29 @@
+{
+  "analysis_info": {
+    "match_name": "Convenience Test",
+    "start_time": "2025-07-28T12:30:49.910930",
+    "end_time": "2025-07-28T12:30:49.911283",
+    "total_duration_seconds": 0.00018143653869628906,
+    "log_file": "data/output/Convenience Test_analysis_log_2025-07-28_12-30-49.log"
+  },
+  "performance_metrics": {
+    "total_frames_processed": 0,
+    "processing_speed_fps": 0.0,
+    "memory_usage_peak_gb": 2.5,
+    "stages_completed": [],
+    "errors_encountered": 0,
+    "warnings_encountered": 0,
+    "test_fps": 30.0
+  },
+  "analysis_context": {
+    "input_video_path": null,
+    "output_video_path": null,
+    "video_metadata": {},
+    "configuration": {},
+    "team_statistics": {},
+    "final_results": {
+      "test": "convenience_functions"
+    }
+  },
+  "stage_timings": {}
+}

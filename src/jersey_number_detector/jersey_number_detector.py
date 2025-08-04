@@ -40,7 +40,7 @@ class JerseyNumberDetector:
         languages=["en"],
         confidence_threshold=0.3,
         consensus_frames=5,
-        valid_number_range=(1, 99),
+        valid_number_range=(0, 99),
     ):
         """
         Initialize the Jersey Number Detector.
@@ -332,9 +332,20 @@ class JerseyNumberDetector:
             logger.debug(f"Rejecting long number sequence: '{cleaned_text}'")
             return valid_numbers
 
+        # Enhanced validation for negative numbers and non-numeric values
+        if self._contains_invalid_patterns(cleaned_text):
+            logger.debug(f"Rejecting text with invalid patterns: '{cleaned_text}'")
+            return valid_numbers
+
+        # Additional check: if original text contains negative signs, reject entirely
+        if "-" in text and any(char.isdigit() for char in text):
+            logger.debug(f"Rejecting text containing negative number: '{text}'")
+            return valid_numbers
+
         # Multiple regex patterns to catch different number formats
+        # Note: These patterns specifically avoid matching negative numbers
         patterns = [
-            r"\b(\d{1,2})\b",  # Standalone 1-2 digit numbers
+            r"(?<!\-)\b(\d{1,2})\b",  # Standalone 1-2 digit numbers (not preceded by -)
             r"^(\d{1,2})$",  # Entire string is 1-2 digits
             r"(\d{1,2})(?=\s|$)",  # 1-2 digits followed by space or end
             r"(?<=\s)(\d{1,2})(?=\s)",  # 1-2 digits surrounded by spaces
@@ -369,6 +380,12 @@ class JerseyNumberDetector:
             try:
                 number = int(num_str)
 
+                # Enhanced validation: Check for negative numbers (shouldn't happen with regex, but safety check)
+                if number < 0:
+                    self.validation_stats["invalid_range"] += 1
+                    self._log_invalid_detection(number, text, "negative_number")
+                    continue
+
                 # Multi-stage validation
                 # Stage 1: Basic range and pattern validation
                 if not self._is_valid_jersey_number(number, text):
@@ -394,6 +411,45 @@ class JerseyNumberDetector:
                 self._log_invalid_detection(num_str, text, "format_error")
 
         return valid_numbers
+
+    def _contains_invalid_patterns(self, text: str) -> bool:
+        """
+        Check if text contains patterns that indicate invalid jersey number context.
+
+        Args:
+            text: Cleaned OCR text
+
+        Returns:
+            True if text contains invalid patterns that should be rejected
+        """
+        # Check for negative number indicators
+        if re.search(r"-\d+", text):
+            logger.debug(f"Negative number pattern detected: '{text}'")
+            return True
+
+        # Check for decimal numbers (jersey numbers should be integers)
+        if re.search(r"\d+\.\d+", text):
+            logger.debug(f"Decimal number pattern detected: '{text}'")
+            return True
+
+        # Check for very long number sequences that are clearly not jersey numbers
+        if re.search(r"\d{4,}", text):
+            logger.debug(f"Very long number sequence detected: '{text}'")
+            return True
+
+        # Check for patterns that suggest timestamps, scores, or other non-jersey data
+        timestamp_patterns = [
+            r"\d{1,2}:\d{2}",  # Time format like "12:34"
+            r"\d{1,2}-\d{1,2}",  # Score format like "2-1"
+            r"\d{4}/\d{2}/\d{2}",  # Date format
+        ]
+
+        for pattern in timestamp_patterns:
+            if re.search(pattern, text):
+                logger.debug(f"Non-jersey pattern detected: '{text}' matches {pattern}")
+                return True
+
+        return False
 
     def _extract_from_long_sequence(self, sequence: str) -> List[str]:
         """
@@ -813,8 +869,12 @@ class JerseyNumberDetector:
         """
         # Apply different confidence thresholds based on number characteristics
 
+        # Jersey number 0 - special case (valid but very rare)
+        if number == 0:
+            # Require higher confidence for number 0 as it's very uncommon
+            min_confidence = self.confidence_threshold + 0.2
         # Very common numbers (1-11) - be more lenient with confidence
-        if 1 <= number <= 11:
+        elif 1 <= number <= 11:
             # These are very common jersey numbers, use standard threshold
             min_confidence = self.confidence_threshold
         # Higher numbers (80+) need higher confidence as they're less common
@@ -831,19 +891,14 @@ class JerseyNumberDetector:
             logger.debug(
                 f"Number {number} rejected due to insufficient confidence: {confidence:.3f} < {min_confidence:.3f}"
             )
-            if number > 80:
+            if number == 0:
+                self.validation_stats["uncommon_numbers_rejected"] += 1
+            elif number > 80:
                 self.validation_stats["context_validation_failed"] += 1
             elif self._is_uncommon_jersey_number(number):
                 self.validation_stats["uncommon_numbers_rejected"] += 1
             else:
                 self.validation_stats["context_validation_failed"] += 1
-            return False
-
-        # Check for common jersey number patterns
-        if number == 0:
-            # Jersey number 0 is very rare in football
-            logger.debug(f"Jersey number 0 rejected - very uncommon in football")
-            self.validation_stats["context_validation_failed"] += 1
             return False
 
         return True

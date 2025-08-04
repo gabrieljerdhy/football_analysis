@@ -1,0 +1,120 @@
+{
+  "analysis_info": {
+    "match_name": "Demo Match",
+    "start_time": "2025-07-28T12:10:19.020007",
+    "end_time": "2025-07-28T12:10:21.827205",
+    "total_duration_seconds": 2.8066914081573486,
+    "log_file": "data/output/Demo Match_analysis_log_2025-07-28_12-10-19.log"
+  },
+  "performance_metrics": {
+    "total_frames_processed": 0,
+    "processing_speed_fps": 24.3,
+    "memory_usage_peak_gb": 4.2,
+    "stages_completed": [
+      {
+        "name": "video_loading",
+        "duration_seconds": 0.5009005069732666
+      },
+      {
+        "name": "object_tracking",
+        "duration_seconds": 1.0014533996582031
+      },
+      {
+        "name": "goal_detection",
+        "duration_seconds": 0.3006906509399414
+      },
+      {
+        "name": "scoreboard_detection",
+        "duration_seconds": 0.40088510513305664
+      },
+      {
+        "name": "statistics_generation",
+        "duration_seconds": 0.601067304611206
+      }
+    ],
+    "errors_encountered": 0,
+    "warnings_encountered": 0,
+    "total_passes_detected": 234,
+    "total_tackles_detected": 45,
+    "detection_accuracy": 0.87
+  },
+  "analysis_context": {
+    "input_video_path": "data/input_videos/demo_match.mp4",
+    "output_video_path": null,
+    "video_metadata": {
+      "width": 1920,
+      "height": 1080,
+      "total_frames": 7200,
+      "duration_seconds": 300.0,
+      "fps": 24.0
+    },
+    "configuration": {
+      "input_video_path": "data/input_videos/demo_match.mp4",
+      "output_video_path": "data/output_videos/demo_match_output.avi",
+      "use_stubs": true,
+      "enable_camera_movement": false,
+      "enable_speed_distance": false,
+      "enable_scoreboard_detection": true,
+      "memory_efficient": true,
+      "batch_size": 100,
+      "device": "cuda"
+    },
+    "team_statistics": {
+      "team_1": {
+        "goals": 2,
+        "passes": 145,
+        "tackles": 23,
+        "possession_percentage": 58.3
+      },
+      "team_2": {
+        "goals": 1,
+        "passes": 89,
+        "tackles": 22,
+        "possession_percentage": 41.7
+      }
+    },
+    "final_results": {
+      "processing_mode": "demo",
+      "total_frames_processed": 7200,
+      "team_1_goals": 2,
+      "team_2_goals": 1,
+      "total_players_scored": 3,
+      "average_goal_confidence": 0.91,
+      "detection_accuracy": 0.87,
+      "processing_time_seconds": 2.8
+    },
+    "output_files": {
+      "output_video": "data/output_videos/demo_match_output.avi",
+      "team_statistics_csv": "data/output/demo_match_team_stats.csv",
+      "player_statistics_csv": "data/output/demo_match_player_stats.csv",
+      "goal_detection_csv": "data/output/demo_match_goal_detected.csv"
+    }
+  },
+  "stage_timings": {
+    "video_loading": {
+      "start": 1753704619.0207164,
+      "end": 1753704619.521617,
+      "duration": 0.5009005069732666
+    },
+    "object_tracking": {
+      "start": 1753704619.521746,
+      "end": 1753704620.5231993,
+      "duration": 1.0014533996582031
+    },
+    "goal_detection": {
+      "start": 1753704620.5233114,
+      "end": 1753704620.824002,
+      "duration": 0.3006906509399414
+    },
+    "scoreboard_detection": {
+      "start": 1753704620.8241138,
+      "end": 1753704621.224999,
+      "duration": 0.40088510513305664
+    },
+    "statistics_generation": {
+      "start": 1753704621.2251308,
+      "end": 1753704621.826198,
+      "duration": 0.601067304611206
+    }
+  }
+}

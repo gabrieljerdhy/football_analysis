@@ -1,5 +1,9 @@
 import csv
+import logging
 import os
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 def load_manual_goals(goals_config_path):
@@ -576,6 +580,9 @@ def export_consolidated_goal_statistics(
     uploader=None,
     bucket_name=None,
     upload_folder_prefix="football_analysis",
+    tracker=None,
+    dribble_analyzer=None,
+    challenge_detector=None,
 ):
     """
     Export consolidated goal statistics to exactly two CSV files as requested.
@@ -593,6 +600,8 @@ def export_consolidated_goal_statistics(
         uploader: DigitalOceanSpacesUploader instance (optional)
         bucket_name (str): Bucket name for upload (optional)
         upload_folder_prefix (str): Folder prefix for uploads
+        tracker: Tracker instance with jersey number detection (optional)
+        dribble_analyzer: DribbleAnalyzer instance for dribble detection statistics (optional)
 
     Returns:
         tuple: (team_csv_path, player_csv_path)
@@ -626,6 +635,9 @@ def export_consolidated_goal_statistics(
             "interceptions",
             "goal_events_count",
             "avg_goal_confidence",
+            "avg_pass_confidence",
+            "avg_tackle_confidence",
+            "avg_interception_confidence",
             "scoreboard_detected",
             "scoreboard_confidence",
             "goal_detected_using_the_model",
@@ -639,6 +651,31 @@ def export_consolidated_goal_statistics(
             "scoreboard_detection_rate",
             "scoreboard_total_detections",
             "scoreboard_successful_extractions",
+            # Dribble detection fields
+            "dribbles_detected",
+            "avg_dribble_confidence",
+            "dribble_events_count",
+            # Cross detection fields
+            "crosses_attempted",
+            "crosses_successful",
+            "crosses_failed",
+            "cross_accuracy_percentage",
+            "avg_cross_distance",
+            "avg_cross_height",
+            "wing_crosses",
+            "byline_crosses",
+            "high_crosses",
+            "low_crosses",
+            "cutbacks",
+            "penalty_box_crosses",
+            "six_yard_crosses",
+            "near_post_crosses",
+            "far_post_crosses",
+            # Challenge detection fields
+            "challenges_attempted",
+            "challenges_successful",
+            "challenges_failed",
+            "challenge_success_rate",
         ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
@@ -705,6 +742,130 @@ def export_consolidated_goal_statistics(
             model_goals = model_team_goals.get(team_id, 0)
             enhanced_scoreboard_goals = scoreboard_team_goals.get(team_id, 0)
 
+            # Get dribble detection values
+            dribbles_detected = 0
+            avg_dribble_confidence = 0.0
+            dribble_events_count = 0
+
+            if dribble_analyzer:
+                team_dribble_counts = dribble_analyzer.get_team_dribble_counts()
+                team_dribble_confidence = dribble_analyzer.get_team_dribble_confidence()
+                team_dribble_events = dribble_analyzer.get_team_dribble_events_count()
+
+                dribbles_detected = team_dribble_counts.get(team_id, 0)
+                avg_dribble_confidence = team_dribble_confidence.get(team_id, 0.0)
+                dribble_events_count = team_dribble_events.get(team_id, 0)
+
+            # Get cross detection values
+            crosses_attempted = 0
+            crosses_successful = 0
+            crosses_failed = 0
+            cross_accuracy_percentage = 0.0
+            avg_cross_distance = 0.0
+            avg_cross_height = 0.0
+            wing_crosses = 0
+            byline_crosses = 0
+            high_crosses = 0
+            low_crosses = 0
+            cutbacks = 0
+            penalty_box_crosses = 0
+            six_yard_crosses = 0
+            near_post_crosses = 0
+            far_post_crosses = 0
+
+            # Get cross statistics from pass counter if available
+            if hasattr(pass_counter, "cross_detector"):
+                cross_stats = pass_counter.cross_detector.get_cross_statistics()
+                team_cross_stats = cross_stats.get("team_statistics", {}).get(
+                    team_id, {}
+                )
+
+                crosses_attempted = team_cross_stats.get("crosses_attempted", 0)
+                crosses_successful = team_cross_stats.get("crosses_successful", 0)
+                crosses_failed = team_cross_stats.get("crosses_failed", 0)
+                cross_accuracy_percentage = team_cross_stats.get(
+                    "cross_accuracy_percentage", 0.0
+                )
+                avg_cross_distance = team_cross_stats.get("avg_cross_distance", 0.0)
+                avg_cross_height = team_cross_stats.get("avg_cross_height", 0.0)
+                wing_crosses = team_cross_stats.get("wing_crosses", 0)
+                byline_crosses = team_cross_stats.get("byline_crosses", 0)
+                high_crosses = team_cross_stats.get("high_crosses", 0)
+                low_crosses = team_cross_stats.get("low_crosses", 0)
+                cutbacks = team_cross_stats.get("cutbacks", 0)
+                penalty_box_crosses = team_cross_stats.get("penalty_box_crosses", 0)
+                six_yard_crosses = team_cross_stats.get("six_yard_crosses", 0)
+                near_post_crosses = team_cross_stats.get("near_post_crosses", 0)
+                far_post_crosses = team_cross_stats.get("far_post_crosses", 0)
+
+            # Get challenge statistics
+            challenges_attempted = 0
+            challenges_successful = 0
+            challenges_failed = 0
+            challenge_success_rate = 0.0
+
+            if challenge_detector:
+                team_challenge_stats = (
+                    challenge_detector.get_team_challenge_statistics()
+                )
+                team_challenge_data = team_challenge_stats.get(team_id, {})
+
+                challenges_attempted = team_challenge_data.get(
+                    "challenges_attempted", 0
+                )
+                challenges_successful = team_challenge_data.get(
+                    "challenges_successful", 0
+                )
+                challenges_failed = team_challenge_data.get("challenges_failed", 0)
+                challenge_success_rate = team_challenge_data.get(
+                    "challenge_success_rate", 0.0
+                )
+
+            # Get confidence statistics for passes, tackles, and interceptions
+            avg_pass_confidence = 0.0
+            avg_tackle_confidence = 0.0
+            avg_interception_confidence = 0.0
+
+            # Extract pass confidence from enhanced pass counter
+            if hasattr(pass_counter, "pass_events"):
+                team_pass_events = [
+                    event
+                    for event in pass_counter.pass_events
+                    if event.passer_team == team_id
+                ]
+                if team_pass_events:
+                    avg_pass_confidence = sum(
+                        event.confidence_score for event in team_pass_events
+                    ) / len(team_pass_events)
+            elif hasattr(pass_counter, "_generate_pass_statistics"):
+                # Try to get from enhanced statistics
+                pass_stats = pass_counter._generate_pass_statistics()
+                team_stats = pass_stats.get("team_statistics", {}).get(team_id, {})
+                avg_pass_confidence = team_stats.get("avg_confidence", 0.0)
+
+            # Extract tackle and interception confidence from enhanced tackle counter
+            if hasattr(tackle_counter, "tackle_events"):
+                team_tackle_events = [
+                    event
+                    for event in tackle_counter.tackle_events
+                    if event.tackler_team == team_id
+                ]
+                if team_tackle_events:
+                    avg_tackle_confidence = sum(
+                        event.confidence_score for event in team_tackle_events
+                    ) / len(team_tackle_events)
+
+            if hasattr(tackle_counter, "interception_events"):
+                team_interception_events = [
+                    event
+                    for event in tackle_counter.interception_events
+                    if event.interceptor_team == team_id
+                ]
+                if team_interception_events:
+                    avg_interception_confidence = sum(
+                        event.confidence_score for event in team_interception_events
+                    ) / len(team_interception_events)
+
             writer.writerow(
                 {
                     "team": team_id,
@@ -719,6 +880,11 @@ def export_consolidated_goal_statistics(
                     "interceptions": tackle_counter.team_interceptions.get(team_id, 0),
                     "goal_events_count": len(team_goal_events),
                     "avg_goal_confidence": round(avg_confidence, 3),
+                    "avg_pass_confidence": round(avg_pass_confidence, 3),
+                    "avg_tackle_confidence": round(avg_tackle_confidence, 3),
+                    "avg_interception_confidence": round(
+                        avg_interception_confidence, 3
+                    ),
                     "scoreboard_detected": scoreboard_stats.get(
                         "scoreboard_detected", False
                     ),
@@ -750,6 +916,31 @@ def export_consolidated_goal_statistics(
                     "scoreboard_successful_extractions": scoreboard_stats.get(
                         "successful_extractions", 0
                     ),
+                    # Dribble detection fields
+                    "dribbles_detected": dribbles_detected,
+                    "avg_dribble_confidence": round(avg_dribble_confidence, 3),
+                    "dribble_events_count": dribble_events_count,
+                    # Cross detection fields
+                    "crosses_attempted": crosses_attempted,
+                    "crosses_successful": crosses_successful,
+                    "crosses_failed": crosses_failed,
+                    "cross_accuracy_percentage": round(cross_accuracy_percentage, 2),
+                    "avg_cross_distance": round(avg_cross_distance, 2),
+                    "avg_cross_height": round(avg_cross_height, 2),
+                    "wing_crosses": wing_crosses,
+                    "byline_crosses": byline_crosses,
+                    "high_crosses": high_crosses,
+                    "low_crosses": low_crosses,
+                    "cutbacks": cutbacks,
+                    "penalty_box_crosses": penalty_box_crosses,
+                    "six_yard_crosses": six_yard_crosses,
+                    "near_post_crosses": near_post_crosses,
+                    "far_post_crosses": far_post_crosses,
+                    # Challenge detection fields
+                    "challenges_attempted": challenges_attempted,
+                    "challenges_successful": challenges_successful,
+                    "challenges_failed": challenges_failed,
+                    "challenge_success_rate": round(challenge_success_rate, 2),
                 }
             )
 
@@ -765,9 +956,26 @@ def export_consolidated_goal_statistics(
     all_player_ids.update(tackle_counter.player_tackles.keys())
     all_player_ids.update(tackle_counter.player_interceptions.keys())
 
+    # Add dribble player IDs if dribble analyzer is available
+    if dribble_analyzer:
+        player_dribble_stats = dribble_analyzer.detector.get_player_statistics()
+        all_player_ids.update(player_dribble_stats.keys())
+
+    # Add cross player IDs if cross detector is available
+    if hasattr(pass_counter, "cross_detector"):
+        cross_stats = pass_counter.cross_detector.get_cross_statistics()
+        player_cross_stats = cross_stats.get("player_statistics", {})
+        all_player_ids.update(player_cross_stats.keys())
+
+    # Add challenge player IDs if challenge detector is available
+    if challenge_detector:
+        player_challenge_stats = challenge_detector.get_player_challenge_statistics()
+        all_player_ids.update(player_challenge_stats.keys())
+
     with open(player_csv_path, "w", newline="") as csvfile:
         fieldnames = [
             "player_id",
+            "jersey_number",
             "team",
             "passes",
             "goals_regular",
@@ -777,8 +985,25 @@ def export_consolidated_goal_statistics(
             "interceptions",
             "goal_events_count",
             "avg_goal_confidence",
+            "avg_pass_confidence",
+            "avg_tackle_confidence",
+            "avg_interception_confidence",
             "scoreboard_detected",
             "scoreboard_confidence",
+            # Dribble detection fields
+            "dribbles_detected",
+            "avg_dribble_confidence",
+            "dribble_events_count",
+            # Cross detection fields
+            "crosses_attempted",
+            "crosses_successful",
+            "crosses_failed",
+            "cross_accuracy_percentage",
+            # Challenge detection fields
+            "challenges_attempted",
+            "challenges_successful",
+            "challenges_failed",
+            "challenge_success_rate",
         ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
@@ -797,6 +1022,38 @@ def export_consolidated_goal_statistics(
                 or "Unknown"
             )
 
+            # Get jersey number from tracker if available
+            jersey_number = None
+            if (
+                tracker
+                and hasattr(tracker, "jersey_detector")
+                and tracker.jersey_detector
+            ):
+                detected_jersey = tracker.jersey_detector.get_jersey_number_for_player(
+                    player_id
+                )
+                if detected_jersey is not None:
+                    jersey_number = detected_jersey
+                    logger.debug(
+                        f"Player {player_id} has detected jersey number: {jersey_number}"
+                    )
+                else:
+                    # Generate a valid jersey number instead of using player_id directly
+                    if hasattr(tracker, "_generate_valid_jersey_number"):
+                        jersey_number = tracker._generate_valid_jersey_number(player_id)
+                    else:
+                        # Fallback: use player_id % 99 + 1 to ensure valid range
+                        jersey_number = (player_id % 99) + 1
+                    logger.debug(
+                        f"Player {player_id} using generated valid jersey number: {jersey_number}"
+                    )
+            else:
+                # No jersey detector available, generate valid number
+                jersey_number = (player_id % 99) + 1
+                logger.debug(
+                    f"No jersey detector available, using generated jersey number {jersey_number} for player {player_id}"
+                )
+
             # Calculate player-specific goal events and confidence
             player_goal_events = [
                 event
@@ -807,9 +1064,131 @@ def export_consolidated_goal_statistics(
                 event.get("confidence_score", 0) for event in player_goal_events
             ) / max(1, len(player_goal_events))
 
+            # Get player dribble statistics
+            player_dribbles_detected = 0
+            player_avg_dribble_confidence = 0.0
+            player_dribble_events_count = 0
+
+            if dribble_analyzer:
+                player_dribble_stats = dribble_analyzer.detector.get_player_statistics()
+                if player_id in player_dribble_stats:
+                    stats = player_dribble_stats[player_id]
+                    player_dribbles_detected = stats.total_dribbles
+                    player_avg_dribble_confidence = stats.avg_confidence
+                    player_dribble_events_count = stats.events_count
+
+            # Get player cross statistics
+            player_crosses_attempted = 0
+            player_crosses_successful = 0
+            player_crosses_failed = 0
+            player_cross_accuracy_percentage = 0.0
+
+            if hasattr(pass_counter, "cross_detector"):
+                cross_stats = pass_counter.cross_detector.get_cross_statistics()
+                player_cross_stats = cross_stats.get("player_statistics", {}).get(
+                    player_id, {}
+                )
+
+                player_crosses_attempted = player_cross_stats.get(
+                    "crosses_attempted", 0
+                )
+                player_crosses_successful = player_cross_stats.get(
+                    "crosses_successful", 0
+                )
+                player_crosses_failed = player_cross_stats.get("crosses_failed", 0)
+                player_cross_accuracy_percentage = player_cross_stats.get(
+                    "cross_accuracy_percentage", 0.0
+                )
+
+            # Get player challenge statistics
+            player_challenges_attempted = 0
+            player_challenges_successful = 0
+            player_challenges_failed = 0
+            player_challenge_success_rate = 0.0
+
+            if challenge_detector:
+                player_challenge_stats = (
+                    challenge_detector.get_player_challenge_statistics()
+                )
+                if player_id in player_challenge_stats:
+                    stats = player_challenge_stats[player_id]
+                    player_challenges_attempted = stats.challenges_attempted
+                    player_challenges_successful = stats.challenges_successful
+                    player_challenges_failed = stats.challenges_failed
+                    player_challenge_success_rate = stats.challenge_success_rate
+
+            # Get confidence statistics for passes, tackles, and interceptions
+            player_avg_pass_confidence = 0.0
+            player_avg_tackle_confidence = 0.0
+            player_avg_interception_confidence = 0.0
+
+            # Extract pass confidence from enhanced pass counter
+            if hasattr(pass_counter, "pass_events"):
+                player_pass_events = [
+                    event
+                    for event in pass_counter.pass_events
+                    if event.passer_id == player_id
+                ]
+                if player_pass_events:
+                    player_avg_pass_confidence = sum(
+                        event.confidence_score for event in player_pass_events
+                    ) / len(player_pass_events)
+            elif (
+                hasattr(pass_counter, "player_passes")
+                and player_id in pass_counter.player_passes
+            ):
+                # Try to get from player statistics if available
+                player_stats = pass_counter.player_passes[player_id]
+                player_avg_pass_confidence = player_stats.get(
+                    "avg_pass_confidence", 0.0
+                )
+
+            # Extract tackle confidence from enhanced tackle counter
+            if hasattr(tackle_counter, "tackle_events"):
+                player_tackle_events = [
+                    event
+                    for event in tackle_counter.tackle_events
+                    if event.tackler_id == player_id
+                ]
+                if player_tackle_events:
+                    player_avg_tackle_confidence = sum(
+                        event.confidence_score for event in player_tackle_events
+                    ) / len(player_tackle_events)
+            elif (
+                hasattr(tackle_counter, "player_tackles")
+                and player_id in tackle_counter.player_tackles
+            ):
+                # Try to get from player statistics if available
+                player_stats = tackle_counter.player_tackles[player_id]
+                player_avg_tackle_confidence = player_stats.get(
+                    "avg_tackle_confidence", 0.0
+                )
+
+            # Extract interception confidence from enhanced tackle counter
+            if hasattr(tackle_counter, "interception_events"):
+                player_interception_events = [
+                    event
+                    for event in tackle_counter.interception_events
+                    if event.interceptor_id == player_id
+                ]
+                if player_interception_events:
+                    player_avg_interception_confidence = sum(
+                        event.confidence_score for event in player_interception_events
+                    ) / len(player_interception_events)
+            elif (
+                hasattr(tackle_counter, "player_interceptions")
+                and player_id in tackle_counter.player_interceptions
+            ):
+                # Try to get from player statistics if available
+                player_stats = tackle_counter.player_interceptions[player_id]
+                player_avg_interception_confidence = player_stats.get(
+                    "avg_interception_confidence", 0.0
+                )
+
             writer.writerow(
                 {
                     "player_id": player_id,
+                    "jersey_number": jersey_number,
                     "team": team,
                     "passes": pass_counter.player_passes.get(player_id, {}).get(
                         "passes", 0
@@ -831,6 +1210,11 @@ def export_consolidated_goal_statistics(
                     ).get("interceptions", 0),
                     "goal_events_count": len(player_goal_events),
                     "avg_goal_confidence": round(avg_confidence, 3),
+                    "avg_pass_confidence": round(player_avg_pass_confidence, 3),
+                    "avg_tackle_confidence": round(player_avg_tackle_confidence, 3),
+                    "avg_interception_confidence": round(
+                        player_avg_interception_confidence, 3
+                    ),
                     "scoreboard_detected": scoreboard_stats.get(
                         "scoreboard_detected", False
                     ),
@@ -839,6 +1223,22 @@ def export_consolidated_goal_statistics(
                         if scoreboard_score
                         else 0
                     ),
+                    # Dribble detection fields
+                    "dribbles_detected": player_dribbles_detected,
+                    "avg_dribble_confidence": round(player_avg_dribble_confidence, 3),
+                    "dribble_events_count": player_dribble_events_count,
+                    # Cross detection fields
+                    "crosses_attempted": player_crosses_attempted,
+                    "crosses_successful": player_crosses_successful,
+                    "crosses_failed": player_crosses_failed,
+                    "cross_accuracy_percentage": round(
+                        player_cross_accuracy_percentage, 2
+                    ),
+                    # Challenge detection fields
+                    "challenges_attempted": player_challenges_attempted,
+                    "challenges_successful": player_challenges_successful,
+                    "challenges_failed": player_challenges_failed,
+                    "challenge_success_rate": round(player_challenge_success_rate, 2),
                 }
             )
 
